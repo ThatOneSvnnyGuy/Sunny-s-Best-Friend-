@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: sunnys-best-friend
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: FLASK_SECRET_KEY
+        generateValue: true
