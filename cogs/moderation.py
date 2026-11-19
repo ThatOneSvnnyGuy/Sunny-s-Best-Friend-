@@ -36,10 +36,58 @@ class Moderation(commands.Cog):
     @app_commands.checks.has_permissions(kick_members=True)
     async def kick(self, i: discord.Interaction, member: discord.Member, reason: str = "No reason"):
         await member.kick(reason=reason); await i.response.send_message(f"👢 Kicked {member.mention} - {reason}")
-    @app_commands.command(name="ban", description="Ban a member")
+    @app_commands.command(name="ban", description="Ban someone by @mention or user ID - works even if they are not in this server")
     @app_commands.checks.has_permissions(ban_members=True)
-    async def ban(self, i: discord.Interaction, member: discord.Member, reason: str = "No reason"):
-        await member.ban(reason=reason); await i.response.send_message(f"🔨 Banned {member.mention} - {reason}")
+    async def ban(self, i: discord.Interaction, user: str, reason: str = "No reason"):
+        # Accept @mention (<@123...>), a plain user ID, or a username.
+        uid = None
+        raw = user.strip().strip("<>@! ")
+        if raw.isdigit():
+            uid = int(raw)
+        else:
+            # Try a member in the server by name / mention first
+            member = None
+            if i.guild:
+                member = i.guild.get_member_named(user.strip())
+                if not member:
+                    for m in i.guild.members:
+                        if m.name.lower() == user.strip().lower() or str(m) == user.strip():
+                            member = m; break
+            if member:
+                await member.ban(reason=reason)
+                await i.response.send_message(f"🔨 Banned {member.mention} (`{member.id}`) - {reason}")
+                await self._log(i.guild, f"🔨 Banned {member} (`{member.id}`) by {i.user} - {reason}")
+                return
+            await i.response.send_message("Couldn't find that user. Use their @mention or their user ID (right-click them in Discord > Copy User ID, with Developer Mode on) — it works even if they left / are not in this server.", ephemeral=True)
+            return
+        # Ban by ID, even if they are not in the server (hackban)
+        target = discord.Object(id=uid)
+        try:
+            await i.guild.ban(target, reason=reason)
+        except discord.NotFound:
+            await i.response.send_message(f"No Discord user exists with ID `{uid}`.", ephemeral=True)
+            return
+        except discord.Forbidden:
+            await i.response.send_message("I don't have permission to ban that user.", ephemeral=True)
+            return
+        # Show their name if Discord knows them
+        try:
+            u = await self.bot.fetch_user(uid)
+            name = f"{u} (`{uid}`)"
+        except Exception:
+            name = f"user ID `{uid}`"
+        await i.response.send_message(f"🔨 Banned {name} - {reason}")
+        await self._log(i.guild, f"🔨 Banned {name} by {i.user} - {reason}")
+
+    @app_commands.command(name="banlist", description="Show everyone currently banned from this server")
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def banlist(self, i: discord.Interaction):
+        bans = [entry async for entry in i.guild.bans()]
+        if not bans:
+            await i.response.send_message("Nobody is banned from this server.")
+            return
+        text = "\n".join(f"• {entry.user} (`{entry.user.id}`) - {entry.reason or 'No reason'}" for entry in bans[:20])
+        await i.response.send_message(f"🔨 Banned ({len(bans)}):\n{text}")
     @app_commands.command(name="timeout", description="Timeout a member (minutes)")
     @app_commands.checks.has_permissions(moderate_members=True)
     async def timeout(self, i: discord.Interaction, member: discord.Member, minutes: int = 10, reason: str = "No reason"):
