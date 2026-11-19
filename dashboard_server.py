@@ -123,15 +123,19 @@ def dashboard(guild_id):
         for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id"]:
             v = request.form.get(key)
             if v: database.set_setting(guild_id, key, int(v))
+        p = (request.form.get("prefix") or "").strip()
+        if p and len(p) <= 3 and not any(c.isspace() for c in p):
+            database.set_setting(guild_id, "prefix", p)
         return redirect(f"/dashboard/{guild_id}?saved=1")
     s = database.get_settings(guild_id)
     saved = "<p>✅ Saved.</p>" if request.args.get("saved") else ""
     fields = "".join([f'<label>{k}<input name="{k}" value="{s.get(k, "")}" placeholder="Discord ID number"></label>' for k in
         ["staff_role_id", "ticket_category_id", "rating_log_channel_id", "welcome_channel_id", "faith_channel_id", "starboard_channel_id"]])
+    prefix = s.get("prefix") or "!"
     return render_template_string(PAGE, body=f"""
     <div class="card"><a href="/servers">← Back to servers</a>{saved}
     <h2>Server {guild_id}</h2><p>Enter Discord IDs (right-click a channel/role > Copy ID, with Developer Mode on). These write to the bot's database.</p>
-    <form method="post">{fields}<button>Save settings</button></form></div>
+    <form method="post">{fields}<label>prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save settings</button></form></div>
     <div class="card"><h3>How to use in Discord</h3>
     <p>/setup-tickets staff_role:@Staff &nbsp;•&nbsp; /set-faith-channel &nbsp;•&nbsp; /set-welcome &nbsp;•&nbsp; /set-starboard</p>
     <p>Daily verse + prayer posts at 9:00 AM Central to the faith channel.</p></div>""")

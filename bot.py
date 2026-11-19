@@ -17,9 +17,21 @@ intents.message_content = True
 intents.members = True
 intents.presences = False
 
+def get_prefix(bot, message):
+    # Per-server custom prefix, set in the dashboard or with /set-prefix.
+    # Default is "!" — slash commands work whatever the prefix is.
+    if message.guild:
+        try:
+            s = database.get_settings(message.guild.id)
+            p = (s.get("prefix") or "!").strip()
+            if p: return p
+        except Exception:
+            pass
+    return "!"
+
 class Bot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=intents, help_command=None)
+        super().__init__(command_prefix=get_prefix, intents=intents, help_command=None)
     async def setup_hook(self):
         database.init_db()
         for ext in [
@@ -27,7 +39,7 @@ class Bot(commands.Bot):
             "cogs.leveling", "cogs.economy", "cogs.fun",
             "cogs.utility", "cogs.music", "cogs.giveaways",
             "cogs.faith", "cogs.extras", "cogs.loa", "cogs.strikes",
-            "cogs.messages", "cogs.applications",
+            "cogs.messages", "cogs.applications", "cogs.prefix",
         ]:
             try:
                 await self.load_extension(ext)

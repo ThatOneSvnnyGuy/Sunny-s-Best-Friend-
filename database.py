@@ -80,7 +80,7 @@ def init_db():
     """)
     c.commit()
     # Migrations for older bot.db files (new columns)
-    for col in ["faith_channel_id INTEGER", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER"]:
+    for col in ["faith_channel_id INTEGER", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'"]:
         try: cur.execute(f"ALTER TABLE settings ADD COLUMN {col}")
         except Exception: pass
     c.commit(); c.close()
