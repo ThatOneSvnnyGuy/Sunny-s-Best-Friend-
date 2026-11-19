@@ -151,21 +151,41 @@ class TicketPanel(discord.ui.View):
             overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         channel = await guild.create_text_channel(f"ticket-{interaction.user.name}", category=category, overwrites=overwrites, reason="Ticket created")
         database.create_ticket(channel.id, guild.id, interaction.user.id)
+        log_id = s.get("ticket_log_channel_id")
+        if log_id:
+            log_ch = guild.get_channel(log_id)
+            if log_ch:
+                try: await log_ch.send(f"🎫 New ticket {channel.mention} opened by {interaction.user.mention} {staff_role.mention if staff_role else ''}")
+                except Exception: pass
         e = discord.Embed(title=f"🎫 Ticket - {interaction.user}", description="Thanks for opening a ticket! Describe your issue and staff will be with you soon.\n\n**When this ticket closes, you'll be asked to rate your support 1-5 stars.**", color=discord.Color.blurple())
         await channel.send(f"{interaction.user.mention} {staff_role.mention if staff_role else ''}", embed=e, view=TicketControls())
         await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
 class Tickets(commands.Cog):
     def __init__(self, bot): self.bot = bot
-    @app_commands.command(name="setup-tickets", description="Post the ticket panel (Admin only)")
-    @app_commands.describe(staff_role="Role that can see / claim tickets", category="Category to put tickets in", rating_log_channel="Channel where ratings get posted")
+    @app_commands.command(name="setup-tickets", description="Set up tickets - pick exactly where everything goes (Admin only)")
+    @app_commands.describe(
+        staff_role="Role that can see / claim tickets",
+        panel_channel="Channel the ticket panel is posted in",
+        rating_log_channel="Channel ratings get posted to when a ticket closes",
+        ticket_log_channel="Channel new-ticket alerts go to (staff get pinged there)",
+        category="Category to put new ticket channels in")
     @app_commands.checks.has_permissions(administrator=True)
-    async def setup_tickets(self, interaction: discord.Interaction, staff_role: discord.Role, category: discord.CategoryChannel = None, rating_log_channel: discord.TextChannel = None):
+    async def setup_tickets(self, interaction: discord.Interaction, staff_role: discord.Role, panel_channel: discord.TextChannel, rating_log_channel: discord.TextChannel, ticket_log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
         database.set_setting(interaction.guild_id, "staff_role_id", staff_role.id)
+        database.set_setting(interaction.guild_id, "panel_channel_id", panel_channel.id)
+        database.set_setting(interaction.guild_id, "rating_log_channel_id", rating_log_channel.id)
+        database.set_setting(interaction.guild_id, "ticket_log_channel_id", ticket_log_channel.id)
         if category: database.set_setting(interaction.guild_id, "ticket_category_id", category.id)
-        if rating_log_channel: database.set_setting(interaction.guild_id, "rating_log_channel_id", rating_log_channel.id)
         e = discord.Embed(title="🎫 Need Help?", description="Click below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards.", color=discord.Color.blurple())
-        await interaction.response.send_message(embed=e, view=TicketPanel())
+        await panel_channel.send(embed=e, view=TicketPanel())
+        await interaction.response.send_message(
+            f"✅ Tickets set up:\n"
+            f"• Panel posted in {panel_channel.mention}\n"
+            f"• Staff role: {staff_role.mention}\n"
+            f"• Ratings go to {rating_log_channel.mention}\n"
+            f"• New-ticket alerts go to {ticket_log_channel.mention}\n"
+            f"• Ticket channels go in {category.mention if category else 'no category'}", ephemeral=True)
     @app_commands.command(name="close", description="Close this ticket and ask the owner to rate it")
     async def close_cmd(self, interaction: discord.Interaction):
         t = database.get_ticket(interaction.channel_id)
