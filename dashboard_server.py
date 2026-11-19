@@ -33,26 +33,32 @@ API = "https://discord.com/api/v10"
 PAGE = """
 <!doctype html><html><head><title>Sunny's Best Friend - Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font-family:system-ui;background:#0f1012;color:#e8e8e8;margin:0;display:flex;min-height:100vh}
-.sidebar{width:260px;background:#111214;padding:20px;flex-shrink:0}
-.sidebar h2{margin:0}.sidebar small{color:#888}
-.sidebar .group{color:#8b8d94;font-size:12px;letter-spacing:1px;margin:28px 0 8px}
-.sidebar a{display:block;color:#d7d7d7;text-decoration:none;padding:10px 12px;border-radius:8px}
-.sidebar a.active{background:#1e2a5a;color:#fff;border-left:3px solid #5865f2}
-.main{flex:1;padding:24px;max-width:900px}
-a{color:#5865f2}.card{background:#1a1b1e;padding:20px;border-radius:12px;margin:16px 0}
-button{background:#5865f2;color:#fff;border:0;padding:10px 18px;border-radius:8px;cursor:pointer}
-input,select{padding:8px;border-radius:6px;border:1px solid #555;background:#1e1f22;color:#fff;width:100%;margin:6px 0}
-@media(max-width:700px){.sidebar{width:200px;padding:12px}body{flex-direction:column}.sidebar{width:100%}}</style></head>
+<style>body{font-family:"gg sans",system-ui,sans-serif;background:#313338;color:#dbdee1;margin:0}
+.topbar{background:#1e1f22;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:12px 20px}
+.topbar .brand{font-weight:700}.topbar .brand small{color:#b5bac1;font-weight:400;margin-left:8px}
+.topbar a.signin{background:#5865f2;color:#fff;text-decoration:none;padding:8px 16px;border-radius:4px;font-weight:600}
+.wrap{display:flex;min-height:calc(100vh - 48px)}
+.sidebar{width:264px;background:#2b2d31;padding:16px;flex-shrink:0}
+.sidebar h2{margin:0;color:#fff}.sidebar small{color:#b5bac1}
+.sidebar .group{color:#949ba4;font-size:12px;letter-spacing:1px;margin:24px 0 8px}
+.sidebar a{display:block;color:#dbdee1;text-decoration:none;padding:8px 12px;border-radius:4px}
+.sidebar a.active{background:#404249;color:#fff}
+.main{flex:1;padding:24px;max-width:880px;background:#f2f3f5;color:#313338}
+a{color:#5865f2}.card{background:#fff;border:1px solid #e3e5e8;padding:20px;border-radius:8px;margin:16px 0}
+button{background:#5865f2;color:#fff;border:0;padding:10px 18px;border-radius:4px;cursor:pointer}
+input,select{padding:8px;border-radius:4px;border:1px solid #e3e5e8;background:#fff;color:#313338;width:100%;margin:6px 0}
+@media(max-width:700px){.wrap{flex-direction:column}.sidebar{width:100%}}</style></head>
 <body>
-<div class="sidebar"><h2>☀️ Sunny's Best Friend</h2><small>All-in-one staff bot</small>
+<div class="topbar"><div class="brand">☀️ Sunny's Best Friend <small>All-in-one Discord bot</small></div><a class="signin" href="/login">Sign in with Discord</a></div>
+<div class="wrap">
+<div class="sidebar"><h2>Sunny's Best Friend</h2><small>Dashboard</small>
 <div class="group">OVERVIEW</div><a href="/servers" class="active">🏠 Overview</a>
 <div class="group">MODERATION</div><a href="/servers">🛡️ Moderation</a><a href="/servers">⚠️ Strikes</a><a href="/servers">📈 Staff activity</a><a href="/servers">📊 Server stats</a>
 <div class="group">APPLICATIONS</div><a href="/servers">📝 Application builder</a><a href="/servers">📥 Submissions</a><a href="/servers">🔍 Review queue</a>
 <div class="group">SUPPORT</div><a href="/servers">🎫 Tickets</a><a href="/servers">⚙️ Ticket settings</a><a href="/servers">📅 Leave (LOA)</a>
 <div class="group">COMMUNITY</div><a href="/servers">👋 Welcome &amp; onboarding</a><a href="/servers">✅ Role buttons</a>
 <div class="group">FAITH &amp; FUN</div><a href="/servers">🙏 Daily verse &amp; prayer</a><a href="/servers">💰 Economy &amp; levels</a><a href="/servers">🎵 Music</a>
-</div><div class="main">{{body|safe}}</div></body></html>
+</div><div class="main">{{body|safe}}</div></div></body></html>
 """
 
 def _api(token, path):
