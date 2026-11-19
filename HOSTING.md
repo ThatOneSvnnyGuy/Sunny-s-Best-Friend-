@@ -4,7 +4,7 @@
 
 The bot itself IS real. `bot.py` + the cogs are a real discord.py bot — it logs into Discord with your token, joins servers, runs all 47 commands.
 
-The websites I built in Muse (Commands / Privacy / Terms / Dashboard) are just pages. A static page has no server, no Client Secret, and no Redirect URL registered in Discord, so it *cannot* do a real Discord login. That's why those buttons were only a preview — I should have said that clearer, sorry about that.
+The websites (Commands / Privacy / Terms / Dashboard) are just pages. A static page has no server, no Client Secret, and no Redirect URL registered in Discord, so it *cannot* do a real Discord login. That's why those buttons were only a preview.
 
 The real dashboard is now in this folder: `dashboard_server.py`.
 It's a real Flask web server that does real Discord OAuth2:

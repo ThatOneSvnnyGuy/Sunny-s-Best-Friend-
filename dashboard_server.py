@@ -1,5 +1,5 @@
 """REAL dashboard server for Sunny's Best Friend.
-This is the difference from the Muse website dashboard:
+This is the difference from the static website dashboard:
 - That one was a static/private page, so it could only PRETEND to sign in.
 - This one is a real Flask web server. It does real Discord OAuth2:
   Login -> Discord authorize -> Discord sends a code back -> this server
