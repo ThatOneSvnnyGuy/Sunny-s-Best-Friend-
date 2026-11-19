@@ -48,10 +48,27 @@ class Bot(commands.Bot):
 
 bot = Bot()
 
+async def _make_bot_role_pink(guild):
+    # Discord auto-creates the bot's own role when it joins a server.
+    # Make that role pink so the bot's name shows pink in the member list.
+    try:
+        role = guild.me.top_role if guild.me else None
+        if role and role.colour != discord.Color.pink():
+            await role.edit(colour=discord.Color.pink(), reason="Sunny's Best Friend role is pink")
+            print(f"💗 Set bot role pink in {guild.name}")
+    except Exception as e:
+        print(f"Could not set bot role pink in {guild.name}: {e}")
+
+@bot.event
+async def on_guild_join(guild):
+    await _make_bot_role_pink(guild)
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
     print(f"✅ In {len(bot.guilds)} server(s)")
+    for guild in bot.guilds:
+        await _make_bot_role_pink(guild)
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching, name="/verse • /ticket • /help"))
 
