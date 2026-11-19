@@ -51,15 +51,26 @@ input,select{padding:8px;border-radius:4px;border:1px solid #e3e5e8;background:#
 <body>
 <div class="topbar"><div class="brand">☀️ Sunny's Best Friend <small>All-in-one Discord bot</small></div><a class="signin" href="/login">Sign in with Discord</a></div>
 <div class="wrap">
-<div class="sidebar"><h2>Sunny's Best Friend</h2><small>Dashboard</small>
-<div class="group">OVERVIEW</div><a href="/servers" class="active">🏠 Overview</a>
-<div class="group">MODERATION</div><a href="/servers">🛡️ Moderation</a><a href="/servers">⚠️ Strikes</a><a href="/servers">📈 Staff activity</a><a href="/servers">📊 Server stats</a>
-<div class="group">APPLICATIONS</div><a href="/servers">📝 Application builder</a><a href="/servers">📥 Submissions</a><a href="/servers">🔍 Review queue</a>
-<div class="group">SUPPORT</div><a href="/servers">🎫 Tickets</a><a href="/servers">⚙️ Ticket settings</a><a href="/servers">📅 Leave (LOA)</a>
-<div class="group">COMMUNITY</div><a href="/servers">👋 Welcome &amp; onboarding</a><a href="/servers">✅ Role buttons</a>
-<div class="group">FAITH &amp; FUN</div><a href="/servers">🙏 Daily verse &amp; prayer</a><a href="/servers">💰 Economy &amp; levels</a><a href="/servers">🎵 Music</a>
-</div><div class="main">{{body|safe}}</div></div></body></html>
+<div class="sidebar">{{sidebar|safe}}</div><div class="main">{{body|safe}}</div></div></body></html>
 """
+
+def _sidebar(guild_id=None, active="servers"):
+    if not guild_id:
+        return '<h2>Sunny\'s Best Friend</h2><small>Dashboard</small><div class="group">SERVERS</div><a href="/servers">🏠 Your servers</a><a href="/invite">➕ Add bot to a server</a>'
+    d = f"/dashboard/{guild_id}"
+    def a(path, label, key):
+        cls = " class=\"active\"" if key == active else ""
+        return f'<a href="{d}{path}"{cls}>{label}</a>'
+    return ('<h2>Sunny\'s Best Friend</h2><small>Dashboard</small>'
+        '<div class="group">SERVER</div><a href="/servers">← All servers</a>'
+        + a("", "🏠 Overview & settings", "settings")
+        + a("/ratings", "⭐ Staff ratings", "ratings")
+        + a("/loa", "📅 Leave (LOA)", "loa")
+        + '<div class="group">IN DISCORD</div>'
+        '<p style="color:#b5bac1;font-size:13px">Tickets, LOA, strikes and applications are used in Discord with slash commands — /setup-tickets, /loa-request, /apply, /strike, /close.</p>')
+
+def _render(body, guild_id=None, active="servers"):
+    return render_template_string(PAGE, body=body, sidebar=_sidebar(guild_id, active))
 
 def _api(token, path):
     r = requests.get(f"{API}{path}", headers={"Authorization": f"Bearer {token}"}, timeout=10)
@@ -69,7 +80,7 @@ def _api(token, path):
 def home():
     if "user" in session:
         return redirect("/servers")
-    return render_template_string(PAGE, body="""
+    return _render("""
     <div class="card"><p>This is the <b>real</b> dashboard. Sign in with Discord for real — no fake preview.</p>
     <a href="/login"><button>Sign in with Discord</button></a>
     <p style="color:#aaa">You will go to discord.com, approve it, and come back here. No password is ever asked for here.</p></div>""")
@@ -107,7 +118,7 @@ def servers():
     for g in session.get("guilds", []):
         rows += f'<div class="card"><b>{g["name"]}</b><br><a href="/dashboard/{g["id"]}"><button>Manage this server</button></a> <a href="https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&scope=bot%20applications.commands&permissions=8&guild_id={g["id"]}">Add bot here</a></div>'
     if not rows: rows = "<p>No servers where you have Manage Server. <a href='/invite'>Invite the bot to a server first</a>.</p>"
-    return render_template_string(PAGE, body=f"""
+    return _render(f"""
     <div class="card">Signed in as <b>{u.get('username')}</b> — <a href="/logout">Sign out</a></div>
     <h2>Your servers</h2>{rows}
     <p><a href="/invite">+ Add Sunny's Best Friend to another server</a></p>""")
@@ -126,7 +137,7 @@ def dashboard(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     if request.method == "POST":
-        for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id"]:
+        for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id", "autorole_id", "log_channel_id"]:
             v = request.form.get(key)
             if v: database.set_setting(guild_id, key, int(v))
         p = (request.form.get("prefix") or "").strip()
@@ -136,15 +147,26 @@ def dashboard(guild_id):
     s = database.get_settings(guild_id)
     saved = "<p>✅ Saved.</p>" if request.args.get("saved") else ""
     fields = "".join([f'<label>{k}<input name="{k}" value="{s.get(k, "")}" placeholder="Discord ID number"></label>' for k in
-        ["staff_role_id", "ticket_category_id", "rating_log_channel_id", "welcome_channel_id", "faith_channel_id", "starboard_channel_id"]])
+        ["staff_role_id", "ticket_category_id", "rating_log_channel_id", "welcome_channel_id", "faith_channel_id", "starboard_channel_id", "autorole_id", "log_channel_id"]])
     prefix = s.get("prefix") or "!"
-    return render_template_string(PAGE, body=f"""
+    return _render(f"""
     <div class="card"><a href="/servers">← Back to servers</a>{saved}
     <h2>Server {guild_id}</h2><p>Enter Discord IDs (right-click a channel/role > Copy ID, with Developer Mode on). These write to the bot's database.</p>
     <form method="post">{fields}<label>prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save settings</button></form></div>
     <div class="card"><h3>How to use in Discord</h3>
     <p>/setup-tickets staff_role:@Staff &nbsp;•&nbsp; /set-faith-channel &nbsp;•&nbsp; /set-welcome &nbsp;•&nbsp; /set-starboard</p>
-    <p>Daily verse + prayer posts at 9:00 AM Central to the faith channel.</p></div>""")
+    <p>Daily verse + prayer posts at 9:00 AM Central to the faith channel.</p></div>""", guild_id=guild_id, active="settings")
+
+@app.route("/dashboard/<int:guild_id>/ratings")
+def ratings_page(guild_id):
+    if "user" not in session: return redirect("/")
+    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+        return "You don't manage that server, or the bot isn't in it.", 403
+    database.init_db()
+    top = database.top_staff(guild_id)
+    rows = "".join([f'<div class="card"><b>{r["staff_id"]}</b> — ⭐ {r["avg"]} average, {r["n"]} rating(s)</div>' for r in top]) or "<p>No ratings yet — ratings appear here when a ticket closes and the owner rates support 1-5 stars.</p>"
+    body = "<h2>⭐ Staff ratings</h2>" + rows + "<p>Check in Discord: /ratings, /leaderboard, /recent-ratings</p>"
+    return _render(body, guild_id=guild_id, active="ratings")
 
 @app.route("/ping")
 def ping():
@@ -162,7 +184,7 @@ def loa_page(guild_id):
     body = "<h2>📅 Leave (LOA)</h2>" + "".join(
         [f'<div class="card"><b>{r["user_id"]}</b> — {r["status"]} — {r["days"]} day(s)<br>{r["reason"]}</div>' for r in rows]) or "<p>Nobody on LOA.</p>"
     body += "<p>Use in Discord: /loa-request, /loa-approve, /loa-deny, /loa-list, /loa-end</p>"
-    return render_template_string(PAGE, body=body)
+    return _render(body, guild_id=guild_id, active="loa")
 
 @app.route("/logout")
 def logout():
