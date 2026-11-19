@@ -9,6 +9,15 @@ BAD_WORDS = ["nigger", "faggot"]  # add your own - keep it short, edit this list
 class Moderation(commands.Cog):
     def __init__(self, bot): self.bot = bot
 
+    async def _log(self, guild, text):
+        s = database.get_settings(guild.id)
+        ch_id = s.get("log_channel_id")
+        if not ch_id: return
+        ch = guild.get_channel(ch_id)
+        if ch:
+            try: await ch.send(text)
+            except Exception: pass
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot or not message.guild: return

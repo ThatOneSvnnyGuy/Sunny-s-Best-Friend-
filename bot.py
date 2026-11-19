@@ -39,7 +39,7 @@ class Bot(commands.Bot):
             "cogs.leveling", "cogs.economy", "cogs.fun",
             "cogs.utility", "cogs.music", "cogs.giveaways",
             "cogs.faith", "cogs.extras", "cogs.loa", "cogs.strikes",
-            "cogs.messages", "cogs.applications", "cogs.prefix",
+            "cogs.messages", "cogs.applications", "cogs.prefix", "cogs.useful",
         ]:
             try:
                 await self.load_extension(ext)
