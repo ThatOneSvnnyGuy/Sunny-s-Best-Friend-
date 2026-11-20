@@ -7,7 +7,7 @@ from discord import app_commands
 import database
 
 INVITE_URL = ("https://discord.com/oauth2/authorize?client_id=1344106788794011820"
-              "&permissions=648711860387839&integration_type=0&scope=bot+applications.commands")
+              "&permissions=8&integration_type=0&scope=bot+applications.commands")
 
 class Useful(discord.ext.commands.Cog):
     def __init__(self, bot):
