@@ -1,6 +1,6 @@
 """Faith - Daily prayers + Bible verses for Sunny's Best Friend.
-Daily verse + prayer auto-posts at 9:00 AM Central to the faith channel
-set with /set-faith-channel. All verses are KJV (public domain).
+Daily verse + prayer auto-posts at the hour set with /setup-faith.
+All verses are KJV (public domain).
 """
 import discord, random, datetime
 from discord.ext import commands, tasks
@@ -222,12 +222,6 @@ class Faith(commands.Cog):
                 msg = await ch.send(embed=e); await msg.add_reaction("🙏")
                 await i.response.send_message(f"Posted your prayer request in {ch.mention} 🙏", ephemeral=True); return
         await i.response.send_message(embed=e)
-
-    @app_commands.command(name="set-faith-channel", description="Set where daily verse + prayer posts (Admin)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def set_faith(self, i: discord.Interaction, channel: discord.TextChannel):
-        database.set_setting(i.guild_id, "faith_channel_id", channel.id)
-        await i.response.send_message(f"🙏 Daily verse + prayer will post in {channel.mention} every day at 9:00 AM Central.")
 
 async def setup(bot):
     await bot.add_cog(Faith(bot))

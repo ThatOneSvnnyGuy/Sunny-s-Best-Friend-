@@ -635,7 +635,7 @@ def section_faith(guild_id):
     return _section_form(guild_id, "faith", "🙏 Daily verse & prayer",
         "Where the daily Bible verse and prayer post at 9:00 AM Central.",
         [("faith_channel_id", "Faith channel")],
-        ["/verse", "/dailyverse", "/prayer", "/pray", "/setup-faith", "/disable-faith", "/set-faith-channel"])
+        ["/verse", "/dailyverse", "/prayer", "/pray", "/setup-faith", "/disable-faith"])
 
 @app.route("/ping")
 def ping():

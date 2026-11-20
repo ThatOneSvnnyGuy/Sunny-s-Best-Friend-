@@ -8,7 +8,7 @@ class Utility(commands.Cog):
     @app_commands.command(name="help", description="All commands")
     async def help_cmd(self, i: discord.Interaction):
         e = discord.Embed(title="🤖 Sunny's Best Friend - Commands", color=discord.Color.blurple())
-        e.add_field(name="🙏 Faith", value="/verse, /dailyverse, /prayer, /pray, /set-faith-channel", inline=False)
+        e.add_field(name="🙏 Faith", value="/verse, /dailyverse, /prayer, /pray, /setup-faith, /disable-faith", inline=False)
         e.add_field(name="🎫 Tickets + Ratings", value="/setup-tickets, /close, /claim, /ratings, /leaderboard, /recent-ratings", inline=False)
         e.add_field(name="🛡️ Moderation", value="/kick, /ban, /timeout, /warn, /purge, /slowmode, /lock, /unlock", inline=False)
         e.add_field(name="📈 Levels", value="/rank, /top", inline=False)
