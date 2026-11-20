@@ -12,6 +12,31 @@ import database
 # pending star choice while feedback modal is open: (channel_id, user_id) -> stars
 _pending = {}
 
+# Every live rating view for a ticket (channel message + owner's DM), so one
+# rating can instantly shut ALL of them down - no second chance to rate.
+_rating_views = {}
+
+def _register_view(channel_id, view):
+    _rating_views.setdefault(channel_id, set()).add(view)
+
+async def _close_all_rating_views(channel_id, stars=None):
+    """Disable every rating view for this ticket (channel + DM) at once."""
+    views = list(_rating_views.pop(channel_id, set()))
+    for view in views:
+        for child in view.children:
+            child.disabled = True
+        view.stop()
+        msg = getattr(view, "message", None)
+        if msg is not None:
+            try:
+                e = discord.Embed(
+                    title="⭐ Rating received - thank you!",
+                    description=f"You rated this ticket {stars_text(stars)} ({stars}/5)." if stars else "This ticket was closed with no rating.",
+                    color=discord.Color.gold())
+                await msg.edit(embed=e, view=view)
+            except Exception:
+                pass
+
 def stars_text(n: int) -> str:
     return "⭐" * n + "☆" * (5 - n)
 
@@ -27,6 +52,8 @@ class FeedbackModal(discord.ui.Modal, title="Rate your support"):
         ok = database.add_rating(guild.id, self.channel_id, interaction.user.id, self.staff_id, self.stars, str(self.feedback) or "")
         if not ok:
             await interaction.response.send_message("You already rated this ticket.", ephemeral=True); return
+        # Instantly close ALL rating opportunities for this ticket (channel + DM)
+        await _close_all_rating_views(self.channel_id, self.stars)
         await interaction.response.send_message(f"Thanks! You rated this ticket {stars_text(self.stars)} ({self.stars}/5).", ephemeral=True)
         # Log it
         s = database.get_settings(guild.id)
@@ -54,6 +81,8 @@ class RatingView(discord.ui.View):
     def __init__(self, channel_id: int, owner_id: int, staff_id):
         super().__init__(timeout=300)
         self.channel_id = channel_id; self.owner_id = owner_id; self.staff_id = staff_id
+        self.message = None
+        _register_view(channel_id, self)
     async def _pick(self, interaction: discord.Interaction, stars: int):
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message("Only the ticket owner can rate this ticket.", ephemeral=True); return
@@ -74,6 +103,7 @@ class RatingView(discord.ui.View):
     async def skip(self, interaction, button):
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message("Only the ticket owner can skip.", ephemeral=True); return
+        await _close_all_rating_views(self.channel_id, None)
         await interaction.response.send_message("No rating given. Closing ticket...", ephemeral=True)
         await asyncio.sleep(5)
         ch = interaction.guild.get_channel(self.channel_id)
@@ -81,10 +111,13 @@ class RatingView(discord.ui.View):
             try: await ch.delete(reason="Ticket closed, rating skipped")
             except Exception: pass
     async def on_timeout(self):
-        # No rating in 5 min - auto delete
-        guild = None
-        # find guild via bot cache is hard here, use stored channel lookup in cog task instead
-        pass
+        # Rating window expired - shut every rating view for this ticket down
+        _rating_views.pop(self.channel_id, None)
+        for child in self.children:
+            child.disabled = True
+        if getattr(self, "message", None) is not None:
+            try: await self.message.edit(view=self)
+            except Exception: pass
 
 class TicketControls(discord.ui.View):
     def __init__(self):
@@ -119,11 +152,14 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
         color=discord.Color.gold())
     e.add_field(name="Staff", value=f"<@{staff_id}>" if staff_id else "No staff claimed", inline=True)
     view = RatingView(channel.id, owner_id, staff_id)
-    await channel.send(embed=e, view=view)
+    msg = await channel.send(embed=e, view=view)
+    view.message = msg
     # DM the owner too, in case they miss it
     if owner:
         try:
-            await owner.send(embed=e, view=RatingView(channel.id, owner_id, staff_id))
+            dm_view = RatingView(channel.id, owner_id, staff_id)
+            dm_msg = await owner.send(embed=e, view=dm_view)
+            dm_view.message = dm_msg
         except Exception:
             pass
     # Auto-delete after 5 min if still there and not rated
