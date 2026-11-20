@@ -59,7 +59,11 @@ class Messages(commands.Cog):
           first, so nothing gets counted twice."""
         if guild.id in self._scanning:
             return
-        if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "1":
+        # Scan version 2 includes threads/forum/voice chats. A server
+        # flagged "1" (text channels only) gets scanned again — the
+        # per-channel watermarks skip what's already done, so only the
+        # new coverage is added, nothing is re-counted.
+        if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "2":
             return
         self._scanning.add(guild.id)
         try:
@@ -102,7 +106,7 @@ class Messages(commands.Cog):
                     total += await self._scan_channel(guild, t, joined)
                     scanned += 1
                 await asyncio.sleep(0)
-            database.set_setting(guild.id, "messages_backfilled", "1")
+            database.set_setting(guild.id, "messages_backfilled", "2")
             print(f"📊 History scan done for {guild.name}: {total:,} messages in {scanned} channels/threads.")
         finally:
             self._scanning.discard(guild.id)
