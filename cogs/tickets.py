@@ -169,33 +169,56 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
         try: await ch.delete(reason="Ticket closed, rating window expired")
         except Exception: pass
 
+TOPICS = [
+    ("general", "💬 General Help", "I need help with something"),
+    ("report", "🚨 Report a Player", "Report someone breaking the rules"),
+    ("bug", "🐛 Bug Report", "Something in the server / bot is broken"),
+    ("billing", "💳 Billing / Purchase", "Help with a purchase, order or payment"),
+    ("appeal", "⚖️ Appeal a Punishment", "Appeal a ban, timeout or warning"),
+    ("other", "✨ Something Else", "Anything that doesn't fit above"),
+]
+
+class TicketTopicSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="What do you need help with? Pick one...",
+            custom_id="ticket_topic_select",
+            options=[discord.SelectOption(label=label, value=value, description=desc) for value, label, desc in TOPICS],
+        )
+    async def callback(self, interaction: discord.Interaction):
+        topic = self.values[0]
+        label = next(l for v, l, _ in TOPICS if v == topic)
+        await create_ticket_for(interaction, topic, label)
+
+async def create_ticket_for(interaction: discord.Interaction, topic: str, label: str):
+    guild = interaction.guild
+    s = database.get_settings(guild.id)
+    category = guild.get_channel(s.get("ticket_category_id")) if s.get("ticket_category_id") else None
+    staff_role = guild.get_role(s.get("staff_role_id")) if s.get("staff_role_id") else None
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    slug = topic.replace("_", "-")
+    channel = await guild.create_text_channel(f"ticket-{slug}-{interaction.user.name}", category=category, overwrites=overwrites, reason=f"Ticket created: {label}")
+    database.create_ticket(channel.id, guild.id, interaction.user.id)
+    log_id = s.get("ticket_log_channel_id")
+    if log_id:
+        log_ch = guild.get_channel(log_id)
+        if log_ch:
+            try: await log_ch.send(f"🎫 New ticket {channel.mention} opened by {interaction.user.mention} — **{label}** {staff_role.mention if staff_role else ''}")
+            except Exception: pass
+    e = discord.Embed(title=f"🎫 Ticket - {label}", description=f"{interaction.user.mention}, thanks for opening a ticket about **{label}**! Describe your issue and staff will be with you soon.\n\n**When this ticket closes, you'll be asked to rate your support 1-5 stars.**", color=discord.Color.blurple())
+    await channel.send(f"{interaction.user.mention} {staff_role.mention if staff_role else ''}", embed=e, view=TicketControls())
+    await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
+
 class TicketPanel(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="🎫 Create Ticket", style=discord.ButtonStyle.success, custom_id="create_ticket")
-    async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        s = database.get_settings(guild.id)
-        category = guild.get_channel(s.get("ticket_category_id")) if s.get("ticket_category_id") else None
-        staff_role = guild.get_role(s.get("staff_role_id")) if s.get("staff_role_id") else None
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-        }
-        if staff_role:
-            overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-        channel = await guild.create_text_channel(f"ticket-{interaction.user.name}", category=category, overwrites=overwrites, reason="Ticket created")
-        database.create_ticket(channel.id, guild.id, interaction.user.id)
-        log_id = s.get("ticket_log_channel_id")
-        if log_id:
-            log_ch = guild.get_channel(log_id)
-            if log_ch:
-                try: await log_ch.send(f"🎫 New ticket {channel.mention} opened by {interaction.user.mention} {staff_role.mention if staff_role else ''}")
-                except Exception: pass
-        e = discord.Embed(title=f"🎫 Ticket - {interaction.user}", description="Thanks for opening a ticket! Describe your issue and staff will be with you soon.\n\n**When this ticket closes, you'll be asked to rate your support 1-5 stars.**", color=discord.Color.blurple())
-        await channel.send(f"{interaction.user.mention} {staff_role.mention if staff_role else ''}", embed=e, view=TicketControls())
-        await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
+        self.add_item(TicketTopicSelect())
 
 class Tickets(commands.Cog):
     def __init__(self, bot): self.bot = bot
@@ -213,7 +236,7 @@ class Tickets(commands.Cog):
         database.set_setting(interaction.guild_id, "rating_log_channel_id", rating_log_channel.id)
         database.set_setting(interaction.guild_id, "ticket_log_channel_id", ticket_log_channel.id)
         if category: database.set_setting(interaction.guild_id, "ticket_category_id", category.id)
-        e = discord.Embed(title="🎫 Need Help?", description="Click below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards.", color=discord.Color.blurple())
+        e = discord.Embed(title="🎫 Need Help?", description="Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards.", color=discord.Color.blurple())
         await panel_channel.send(embed=e, view=TicketPanel())
         await interaction.response.send_message(
             f"✅ Tickets set up:\n"
