@@ -19,9 +19,11 @@ class Moderation(commands.Cog):
             except Exception: pass
 
     async def _check_message(self, message):
-        """Delete a message if it has a censored word. Returns True if deleted."""
+        """Delete a message if it has a censored word. Returns True if deleted.
+        Applies to EVERYONE (mods and owner included) - the old version skipped
+        anyone with Manage Messages, which is every admin/owner, so it looked
+        broken when tested by the person who set it up."""
         if message.author.bot or not message.guild: return False
-        if message.author.guild_permissions.manage_messages: return False
         words = [w.lower() for w in BAD_WORDS] + database.list_censored_words(message.guild.id)
         low = message.content.lower()
         hit = None
