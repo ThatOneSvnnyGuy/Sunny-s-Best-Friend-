@@ -29,7 +29,7 @@ No code change is needed to add it to other servers. It just needs to be online 
 
 There is no truly free, reliable 24/7 host left in 2026. Here's the honest list:
 
-### 1. Render FREE + UptimeRobot ping — $0, doable from your phone (RECOMMENDED FOR CONNOR, IN BED)
+### 1. Render FREE + UptimeRobot ping — $0, doable from your phone
 - Render free web services sleep after 15 minutes with no traffic, so we keep it awake for free with UptimeRobot (free, 50 monitors).
 - This repo is ready: `Dockerfile` + `render.yaml` + `start.sh` (bot + real dashboard together) + `/ping` endpoint in `dashboard_server.py`.
 - Phone steps (no PC, no card):

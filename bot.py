@@ -1,4 +1,4 @@
-"""Sunny's Best Friend - ALL-IN-ONE Discord Bot - Kai / Connor build
+"""Sunny's Best Friend - ALL-IN-ONE Discord Bot
 Python + discord.py. Run: python bot.py (after .env is set)
 Features: Moderation, AutoMod, Tickets + Ticket-Close Rating,
 Levels, Economy, Fun, Music, Giveaways, Polls, Welcome, Utility,
