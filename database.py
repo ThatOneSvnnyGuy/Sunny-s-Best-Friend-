@@ -371,3 +371,8 @@ def delete_ticket_template(template_id, guild_id):
     c = _conn(); cur = c.cursor()
     cur.execute("DELETE FROM ticket_templates WHERE id=? AND guild_id=?", (template_id, guild_id))
     c.commit(); c.close()
+
+def count_warns(guild_id, user_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("SELECT COUNT(*) FROM warns WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+    n = cur.fetchone()[0]; c.close(); return n

@@ -33,21 +33,43 @@ API = "https://discord.com/api/v10"
 PAGE = """
 <!doctype html><html><head><title>Sunny's Best Friend - Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font-family:"gg sans",system-ui,sans-serif;background:#313338;color:#dbdee1;margin:0}
-.topbar{background:#1e1f22;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:12px 20px}
-.topbar .brand{font-weight:700}.topbar .brand small{color:#b5bac1;font-weight:400;margin-left:8px}
-.topbar a.signin{background:#5865f2;color:#fff;text-decoration:none;padding:8px 16px;border-radius:4px;font-weight:600}
-.wrap{display:flex;min-height:calc(100vh - 48px)}
-.sidebar{width:264px;background:#2b2d31;padding:16px;flex-shrink:0}
-.sidebar h2{margin:0;color:#fff}.sidebar small{color:#b5bac1}
-.sidebar .group{color:#949ba4;font-size:12px;letter-spacing:1px;margin:24px 0 8px}
-.sidebar a{display:block;color:#dbdee1;text-decoration:none;padding:8px 12px;border-radius:4px}
-.sidebar a.active{background:#404249;color:#fff}
-.main{flex:1;padding:24px;max-width:880px;background:#f2f3f5;color:#313338}
-a{color:#5865f2}.card{background:#fff;border:1px solid #e3e5e8;padding:20px;border-radius:8px;margin:16px 0}
-button{background:#5865f2;color:#fff;border:0;padding:10px 18px;border-radius:4px;cursor:pointer}
-input,select{padding:8px;border-radius:4px;border:1px solid #e3e5e8;background:#fff;color:#313338;width:100%;margin:6px 0}
-@media(max-width:700px){.wrap{flex-direction:column}.sidebar{width:100%}}</style></head>
+<style>
+*{box-sizing:border-box}
+body{font-family:Inter,"gg sans",system-ui,-apple-system,sans-serif;background:#1e1f22;color:#dbdee1;margin:0;line-height:1.5}
+.topbar{background:#111214;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;position:sticky;top:0;z-index:10;border-bottom:1px solid #232428}
+.topbar .brand{font-weight:800;font-size:17px}.topbar .brand small{color:#b5bac1;font-weight:400;margin-left:8px;font-size:13px}
+.topbar a.signin{background:#5865f2;color:#fff;text-decoration:none;padding:8px 18px;border-radius:20px;font-weight:600;font-size:14px}
+.topbar a.signin:hover{background:#4752c4}
+.wrap{display:flex;min-height:calc(100vh - 57px)}
+.sidebar{width:248px;background:#111214;padding:16px;flex-shrink:0}
+.sidebar h2{margin:0;color:#fff;font-size:18px}.sidebar small{color:#b5bac1}
+.sidebar .group{color:#949ba4;font-size:11px;font-weight:700;letter-spacing:1.2px;margin:26px 0 6px;text-transform:uppercase}
+.sidebar a{display:flex;align-items:center;gap:8px;color:#b5bac1;text-decoration:none;padding:9px 12px;border-radius:8px;font-size:15px}
+.sidebar a:hover{background:#1e1f22;color:#fff}
+.sidebar a.active{background:#404249;color:#fff;font-weight:600}
+.main{flex:1;padding:28px;max-width:980px}
+.main h2{color:#fff;margin:0 0 4px;font-size:24px}
+.main h3{color:#fff;margin:0 0 12px;font-size:17px}
+.muted{color:#b5bac1;font-size:14px}
+a{color:#949cf7}
+.card{background:#2b2d31;border:1px solid #3f4147;padding:20px;border-radius:12px;margin:0 0 16px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px}
+.stat{background:#2b2d31;border:1px solid #3f4147;border-radius:12px;padding:16px}
+.stat .num{font-size:28px;font-weight:800;color:#fff;line-height:1.1}
+.stat .lbl{color:#b5bac1;font-size:13px;margin-top:4px}
+.rowline{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #3f4147}
+.rowline:last-child{border-bottom:0}
+.rowline b{color:#fff}
+.pill{display:inline-block;background:#5865f2;color:#fff;font-size:12px;font-weight:700;padding:2px 10px;border-radius:20px}
+.pill.green{background:#248046}.pill.amber{background:#a87300}
+button{background:#5865f2;color:#fff;border:0;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px}
+button:hover{background:#4752c4}
+button.danger{background:#ed4245}button.danger:hover{background:#c03537}
+input,select,textarea{padding:10px 12px;border-radius:8px;border:1px solid #3f4147;background:#1e1f22;color:#fff;width:100%;margin:6px 0;font-size:14px;font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:2px solid #5865f2;border-color:#5865f2}
+label{font-size:14px;font-weight:600;color:#dbdee1}
+label small{color:#b5bac1;font-weight:400}
+@media(max-width:700px){.wrap{flex-direction:column}.sidebar{width:100%}.main{padding:16px}}</style></head>
 <body>
 <div class="topbar"><div class="brand">☀️ Sunny's Best Friend <small>All-in-one Discord bot</small></div><a class="signin" href="/login">Sign in with Discord</a></div>
 <div class="wrap">
@@ -163,6 +185,30 @@ def dashboard(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     if request.method == "POST":
+        action = request.form.get("action")
+        if action == "lookup":
+            try:
+                uid = int(request.form.get("user_id"))
+            except Exception:
+                return redirect(f"/dashboard/{guild_id}?lookup=bad")
+            ms = database.get_message_stats(guild_id, uid)
+            lvl = database.get_level(guild_id, uid)
+            warns = database.count_warns(guild_id, uid)
+            strikes = database.list_strikes(guild_id, uid)
+            session["lookup"] = {"uid": uid, "messages": ms, "level": lvl, "warns": warns, "strikes": len(strikes)}
+            return redirect(f"/dashboard/{guild_id}?lookup=ok")
+        if action == "announce":
+            token = os.getenv("DISCORD_TOKEN")
+            ch = request.form.get("channel_id")
+            text = (request.form.get("text") or "").strip()
+            if token and ch and text:
+                try:
+                    requests.post(f"{API}/channels/{ch}/messages",
+                        headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+                        json={"content": text}, timeout=10)
+                except Exception:
+                    pass
+            return redirect(f"/dashboard/{guild_id}?announced=1")
         for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id", "autorole_id", "log_channel_id", "panel_channel_id", "ticket_log_channel_id", "app_channel_id", "app_role_id"]:
             v = request.form.get(key)
             if v: database.set_setting(guild_id, key, int(v))
@@ -177,34 +223,51 @@ def dashboard(guild_id):
     st = database.guild_stats(guild_id)
     live = _guild_live(guild_id)
     name = live.get("name") or f"Server {guild_id}"
-    def row(label, key):
-        v = s.get(key) or "not set"
-        return f"<p><b>{label}:</b> {v}</p>"
     def user_list(rows, key="n", label=""):
-        return "".join([f"<p>&lt;@{r['user_id']}&gt; — {r[key]} {label}</p>" for r in rows]) or "<p>Nothing yet.</p>"
+        return "".join([f"<div class='rowline'><span>&lt;@{r['user_id']}&gt;</span><b>{r[key]} {label}</b></div>" for r in rows]) or "<p class='muted'>Nothing yet.</p>"
     top_msg = database.top_messages(guild_id)
     top_lvl = database.top_levels(guild_id)
     top_stf = database.top_staff(guild_id, 5)
     recent = database.recent_ratings(guild_id, 5)
     tickets = database.recent_tickets(guild_id)
+    apps = database.list_applications(guild_id, "pending")[:5]
+    feed = "".join([f"<div class='rowline'><span>⭐ <b>{r['staff_id']}</b> got {r['stars']}★</span><span class='muted'>from &lt;@{r['user_id']}&gt;</span></div>" for r in recent])
+    feed += "".join([f"<div class='rowline'><span>🎫 Ticket &lt;#{t['channel_id']}&gt;</span><span class='pill'>{t['status']}</span></div>" for t in tickets])
+    feed += "".join([f"<div class='rowline'><span>📝 Application from &lt;@{a['user_id']}&gt;</span><span class='pill amber'>pending</span></div>" for a in apps])
+    lookup_html = ""
+    lk = session.pop("lookup", None)
+    if request.args.get("lookup") == "ok" and lk:
+        lookup_html = f"""<div class="card"><h3>🔍 Member &lt;@{lk['uid']}&gt;</h3>
+        <div class="rowline"><span>Messages</span><b>{lk['messages']['total']} total • {lk['messages']['today']} today</b></div>
+        <div class="rowline"><span>Level</span><b>{lk['level'][1]} • {lk['level'][0]} XP</b></div>
+        <div class="rowline"><span>Warns / Strikes</span><b>{lk['warns']} warns • {lk['strikes']} strikes</b></div></div>"""
+    elif request.args.get("lookup") == "bad":
+        lookup_html = "<div class='card'><p>⚠️ That didn't look like a user ID — copy it from Discord (right-click a member &gt; Copy User ID).</p></div>"
+    announced = "<p>✅ Announcement sent.</p>" if request.args.get("announced") else ""
     return _render(f"""
-    <div class="card"><a href="/servers">← Back to servers</a>{saved}
+    <div class="card"><a href="/servers">← Back to servers</a>{saved}{announced}
     <h2>{name}</h2>
-    <p><b>{live.get("members", "?")} members</b> • <b>{live.get("online", "?")} online now</b> • Prefix: <b>{prefix}</b></p>
-    <p>Numbers below are live from what the bot has seen in your server — messages only count from when the bot was added.</p></div>
-    <div class="card"><h3>📊 What's happening</h3>
-    <p>💬 Messages: <b>{st["messages_total"]}</b> total • <b>{st["messages_today"]}</b> today • <b>{st["messages_week"]}</b> this week</p>
-    <p>🎫 Tickets: <b>{st["open_tickets"]}</b> open • {st["tickets_total"]} total</p>
-    <p>⭐ Ratings: <b>{st["ratings_avg"]}★</b> average from {st["ratings_total"]} rating(s)</p>
-    <p>📝 Applications waiting: <b>{st["pending_apps"]}</b> • 📅 On leave: <b>{st["loa_active"]}</b> • ⚠️ Warns: <b>{st["warns_total"]}</b></p></div>
+    <p class="muted">Prefix: <b>{prefix}</b> • Numbers are live from what the bot has seen — messages only count from when the bot was added.</p></div>
+    <div class="stats">
+      <div class="stat"><div class="num">{live.get("members", "?")}</div><div class="lbl">Members</div></div>
+      <div class="stat"><div class="num">{live.get("online", "?")}</div><div class="lbl">Online now</div></div>
+      <div class="stat"><div class="num">{st["messages_today"]}</div><div class="lbl">Messages today</div></div>
+      <div class="stat"><div class="num">{st["open_tickets"]}</div><div class="lbl">Open tickets</div></div>
+      <div class="stat"><div class="num">{st["ratings_avg"]}★</div><div class="lbl">Avg rating ({st["ratings_total"]})</div></div>
+      <div class="stat"><div class="num">{st["pending_apps"]}</div><div class="lbl">Applications waiting</div></div>
+    </div>
+    <div class="card"><h3>🕒 Recent activity</h3>{feed or "<p class='muted'>Nothing yet — activity shows up here as tickets open, ratings come in and applications arrive.</p>"}</div>
+    {lookup_html}
+    <div class="card"><h3>🔍 Look up a member</h3>
+    <form method="post"><input type="hidden" name="action" value="lookup"><label>User ID <input name="user_id" placeholder="Discord user ID number"></label><button>Look up</button></form>
+    <p class="muted">See their messages, level, warns and strikes.</p></div>
+    <div class="card"><h3>📣 Send an announcement</h3>
+    <form method="post"><input type="hidden" name="action" value="announce"><label>Channel ID <input name="channel_id" placeholder="Discord channel ID number"></label><label>Message <textarea name="text" rows="3" placeholder="Type your announcement..."></textarea></label><button>Send to Discord</button></form></div>
     <div class="card"><h3>🏆 Most active members</h3>{user_list(top_msg, "n", "messages")}</div>
     <div class="card"><h3>📈 Top levels</h3>{user_list(top_lvl, "xp", "XP")}</div>
     <div class="card"><h3>⭐ Top rated staff</h3>{user_list(top_stf, "avg", "★ average")}</div>
-    <div class="card"><h3>🕒 Recent ratings</h3>{''.join([f"<p><b>{r['staff_id']}</b> got {r['stars']}★ from &lt;@{r['user_id']}&gt;</p>" for r in recent]) or "<p>No ratings yet.</p>"}</div>
-    <div class="card"><h3>🎫 Recent tickets</h3>{''.join([f"<p>Ticket &lt;#{t['channel_id']}&gt; — &lt;@{t['owner_id']}&gt; — {t['status']}</p>" for t in tickets]) or "<p>No tickets yet.</p>"}</div>
-    <div class="card"><h3>⚙️ Settings</h3>
-    <form method="post"><input type="hidden" name="next" value="/dashboard/{guild_id}"><label>Command prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save prefix</button></form>
-    <p>Change each section on the left: {row("Staff role", "staff_role_id")}{row("Panel channel", "panel_channel_id")}{row("Faith channel", "faith_channel_id")}</p></div>""", guild_id=guild_id, active="settings")
+    <div class="card"><h3>⚙️ Quick settings</h3>
+    <form method="post"><input type="hidden" name="next" value="/dashboard/{guild_id}"><label>Command prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save prefix</button></form></div>""", guild_id=guild_id, active="settings")
 @app.route("/dashboard/<int:guild_id>/ratings")
 def ratings_page(guild_id):
     if "user" not in session: return redirect("/")
