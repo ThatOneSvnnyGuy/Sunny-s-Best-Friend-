@@ -7,7 +7,9 @@ import sqlite3, time, os
 DB_PATH = os.getenv("BOT_DB_PATH") or os.path.join(os.path.dirname(__file__), "bot.db")
 
 def _conn():
-    c = sqlite3.connect(DB_PATH)
+    # timeout=30: writers wait instead of instantly failing with
+    # "database is locked" when the scan and live counting write at once.
+    c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
     return c
 
@@ -124,7 +126,7 @@ def init_db():
     except Exception: pass
     c.commit()
     # Migrations for older bot.db files (new columns)
-    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT"]:
+    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT"]:
         try: cur.execute(f"ALTER TABLE settings ADD COLUMN {col}")
         except Exception: pass
     c.commit(); c.close()
