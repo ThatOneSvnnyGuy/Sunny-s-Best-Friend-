@@ -391,12 +391,103 @@ def _post_ticket_panel(guild_id, s):
         return "<p>✅ Ticket panel posted in Discord.</p>"
     return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
 
-@app.route("/dashboard/<int:guild_id>/applications")
+@app.route("/dashboard/<int:guild_id>/applications", methods=["GET", "POST"])
 def section_applications(guild_id):
-    return _section_form(guild_id, "applications", "📝 Applications",
-        "Where applications are sent and which role approved applicants get.",
-        [("app_channel_id", "Application channel"), ("app_role_id", "Role given on approval")],
-        ["/setup-applications", "/apply", "/applications"])
+    if "user" not in session: return redirect("/")
+    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+        return "You don't manage that server, or the bot isn't in it.", 403
+    database.init_db()
+    s = database.get_settings(guild_id)
+    msg = ""
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add_template":
+            name = (request.form.get("name") or "").strip()
+            if name:
+                def _id(v):
+                    try: return int(v)
+                    except Exception: return None
+                qs = []
+                for line in (request.form.get("questions") or "").splitlines():
+                    line = line.strip()
+                    if not line: continue
+                    parts = [p.strip() for p in line.split("|")]
+                    qs.append({"label": parts[0][:45],
+                               "style": "paragraph" if len(parts) > 1 and parts[1].lower().startswith("long") else "short",
+                               "required": not (len(parts) > 2 and parts[2].lower().startswith("opt")),
+                               "max_length": 500 if len(parts) > 1 and parts[1].lower().startswith("long") else 200})
+                import json as _json
+                database.add_application_template(guild_id, name,
+                    request.form.get("description") or "",
+                    _id(request.form.get("role_id")),
+                    _id(request.form.get("review_channel_id")),
+                    _json.dumps(qs[:5]))
+                msg = f"<p>✅ Template '<b>{name}</b>' created with {len(qs[:5])} question(s).</p>"
+            else:
+                msg = "<p>⚠️ Give the template a name first.</p>"
+        elif action == "delete_template":
+            database.delete_application_template(int(request.form.get("template_id")), guild_id)
+            msg = "<p>✅ Template deleted.</p>"
+        elif action == "decide":
+            app_id = int(request.form.get("app_id"))
+            approve = request.form.get("decision") == "approve"
+            app = database.get_application(app_id)
+            if app and app["status"] == "pending":
+                database.set_application_status(app_id, "approved" if approve else "denied")
+                token = os.getenv("DISCORD_TOKEN")
+                tpl = database.get_application_template(app.get("template_id"), guild_id) if app.get("template_id") else None
+                role_id = (tpl or {}).get("role_id") or s.get("app_role_id")
+                review_id = (tpl or {}).get("review_channel_id") or s.get("app_channel_id")
+                if token:
+                    if approve and role_id:
+                        try: requests.put(f"{API}/guilds/{guild_id}/members/{app['user_id']}/roles/{role_id}", headers={"Authorization": f"Bot {token}"}, timeout=10)
+                        except Exception: pass
+                    if review_id:
+                        try: requests.post(f"{API}/channels/{review_id}/messages", headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+                            json={"content": f"Application #{app_id} from <@{app['user_id']}> was **{'✅ Approved' if approve else '❌ Denied'}** from the dashboard."}, timeout=10)
+                        except Exception: pass
+                msg = f"<p>✅ Application #{app_id} {'approved' if approve else 'denied'}.</p>"
+            else:
+                msg = "<p>⚠️ That application was already decided.</p>"
+    templates = database.list_application_templates(guild_id)
+    import json as _json
+    trows = ""
+    for t in templates:
+        try: qs = _json.loads(t.get("questions") or "[]")
+        except Exception: qs = []
+        qlist = "".join([f"<div class='rowline'><span>{q.get('label')}</span><span class='muted'>{'long answer' if q.get('style') == 'paragraph' else 'short answer'}{' • optional' if not q.get('required') else ''}</span></div>" for q in qs]) or "<p class='muted'>Built-in staff questions.</p>"
+        trows += f"""<div class="card"><h3>📝 {t['name']}</h3><p class="muted">{t.get('description') or ''}</p>
+        <p>Role on approval: {t.get('role_id') or 'server default'} • Review channel: {t.get('review_channel_id') or 'server default'}</p>{qlist}
+        <form method="post"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button class="danger">Delete template</button></form></div>"""
+    pending = database.list_applications(guild_id, "pending")
+    prows = ""
+    for a in pending:
+        try: ans = _json.loads(a.get("answers") or "{}")
+        except Exception: ans = {}
+        fields = "".join([f"<div class='rowline'><span>{k}</span><b>{str(v)[:120]}</b></div>" for k, v in ans.items()])
+        prows += f"""<div class="card"><h3>Application #{a['id']} — &lt;@{a['user_id']}&gt;</h3>{fields}
+        <form method="post" style="display:inline"><input type="hidden" name="action" value="decide"><input type="hidden" name="app_id" value="{a['id']}"><input type="hidden" name="decision" value="approve"><button>✅ Approve</button></form>
+        <form method="post" style="display:inline"><input type="hidden" name="action" value="decide"><input type="hidden" name="app_id" value="{a['id']}"><input type="hidden" name="decision" value="deny"><button class="danger">❌ Deny</button></form></div>"""
+    body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>📝 Applications</h2>
+    <p>Build application forms here — each template is its own application (Staff, Moderator, Event Team...), with its own questions, its own role on approval, and its own review channel. In Discord, /apply lets members pick which one to fill in. You can approve or deny pending applications right here too.</p></div>
+    <div class="card"><h3>⏳ Waiting for review ({len(pending)})</h3>{prows or "<p class='muted'>No pending applications.</p>"}</div>
+    <h3>Your application templates</h3>{trows or "<p class='muted'>No templates yet — members use the built-in staff form until you make one.</p>"}
+    <div class="card"><h3>＋ New template</h3>
+    <form method="post"><input type="hidden" name="action" value="add_template">
+    <label>Template name (e.g. Staff, Moderator, Event Team)<input name="name" placeholder="Staff" maxlength="100"></label>
+    <label>Description<input name="description" placeholder="What is this application for?" maxlength="200"></label>
+    <label>Questions — one per line: <small>Question | short or long | required or optional</small><textarea name="questions" rows="4" placeholder="Why do you want this role? | long | required&#10;Any experience? | long | optional&#10;How active can you be? | short | required"></textarea></label>
+    <p class="muted">Max 5 questions (Discord's limit). Leave the questions box empty to use the built-in staff questions.</p>
+    <label>Role ID given on approval (optional)<input name="role_id" placeholder="Discord ID number"></label>
+    <label>Review channel ID (optional — where applications go)<input name="review_channel_id" placeholder="Discord ID number"></label>
+    <button>Create template</button></form></div>
+    <div class="card"><h3>Server defaults</h3>
+    <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/applications">
+    <label>Application channel ID <input name="app_channel_id" value="{s.get('app_channel_id') or ''}" placeholder="Discord ID number"></label>
+    <label>Role given on approval <input name="app_role_id" value="{s.get('app_role_id') or ''}" placeholder="Discord ID number"></label>
+    <button>Save defaults</button></form>
+    <p><b>Used in Discord:</b> /setup-applications • /apply • /applications</p></div>"""
+    return _render(body, guild_id=guild_id, active="applications")
 
 @app.route("/dashboard/<int:guild_id>/community")
 def section_community(guild_id):

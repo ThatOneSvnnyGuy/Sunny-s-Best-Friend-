@@ -84,6 +84,15 @@ def init_db():
         panel_channel_id INTEGER,
         category_id INTEGER
     );
+    CREATE TABLE IF NOT EXISTS application_templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER,
+        name TEXT,
+        description TEXT,
+        role_id INTEGER,
+        review_channel_id INTEGER,
+        questions TEXT
+    );
     CREATE TABLE IF NOT EXISTS message_days (
         guild_id INTEGER, user_id INTEGER,
         day TEXT, -- YYYY-MM-DD (UTC)
@@ -91,6 +100,9 @@ def init_db():
         PRIMARY KEY (guild_id, user_id, day)
     );
     """)
+    c.commit()
+    try: cur.execute("ALTER TABLE applications ADD COLUMN template_id INTEGER")
+    except Exception: pass
     c.commit()
     # Migrations for older bot.db files (new columns)
     for col in ["faith_channel_id INTEGER", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER"]:
@@ -376,3 +388,24 @@ def count_warns(guild_id, user_id):
     c = _conn(); cur = c.cursor()
     cur.execute("SELECT COUNT(*) FROM warns WHERE guild_id=? AND user_id=?", (guild_id, user_id))
     n = cur.fetchone()[0]; c.close(); return n
+
+def add_application_template(guild_id, name, description="", role_id=None, review_channel_id=None, questions="[]"):
+    c = _conn(); cur = c.cursor()
+    cur.execute("INSERT INTO application_templates (guild_id, name, description, role_id, review_channel_id, questions) VALUES (?,?,?,?,?,?)",
+                (guild_id, name, description, role_id, review_channel_id, questions))
+    c.commit(); tid = cur.lastrowid; c.close(); return tid
+
+def list_application_templates(guild_id):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT * FROM application_templates WHERE guild_id=? ORDER BY id", (guild_id,)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def get_application_template(template_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    r = cur.execute("SELECT * FROM application_templates WHERE id=? AND guild_id=?", (template_id, guild_id)).fetchone()
+    c.close(); return dict(r) if r else None
+
+def delete_application_template(template_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("DELETE FROM application_templates WHERE id=? AND guild_id=?", (template_id, guild_id))
+    c.commit(); c.close()
