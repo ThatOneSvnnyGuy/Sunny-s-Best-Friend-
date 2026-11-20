@@ -15,25 +15,15 @@ class Messages(commands.Cog):
         self.bot = bot
         self._scanning = set()  # guild ids with a scan already running
 
-    async def _scan_guild(self, guild, announce=True):
-        """Count every message in the server's history, once. Skips guilds
-        already scanned (flag in settings) and never runs twice at once."""
+    async def _scan_guild(self, guild, announce=False):
+        """Count every message in the server's history, once, silently.
+        Skips guilds already scanned (flag in settings) and never runs
+        twice at once."""
         if guild.id in self._scanning:
             return
         if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "1":
             return
         self._scanning.add(guild.id)
-        channel = None
-        if announce:
-            channel = guild.system_channel
-            if not channel or not channel.permissions_for(guild.me).send_messages:
-                channel = next((c for c in guild.text_channels
-                                if c.permissions_for(guild.me).send_messages), None)
-            if channel:
-                try:
-                    await channel.send("🔍 I'm scanning this server's full message history so `/messages` counts everything, all-time. I'll say when it's done.")
-                except Exception:
-                    pass
         total = 0
         channels = 0
         try:
@@ -54,11 +44,6 @@ class Messages(commands.Cog):
             database.set_setting(guild.id, "messages_backfilled", "1")
         finally:
             self._scanning.discard(guild.id)
-        if channel:
-            try:
-                await channel.send(f"✅ History scan done — counted **{total:,}** messages across **{channels}** channels. `/messages` is now truly all-time.")
-            except Exception:
-                pass
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild):
