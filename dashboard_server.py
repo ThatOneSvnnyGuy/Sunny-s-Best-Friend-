@@ -239,12 +239,94 @@ def section_moderation(guild_id):
         [("staff_role_id", "Staff role"), ("log_channel_id", "Mod log channel"), ("autorole_id", "Auto-role for new members")],
         ["/kick", "/ban", "/banlist", "/timeout", "/untimeout", "/warn", "/warns", "/strike", "/strikes", "/purge", "/slowmode", "/lock", "/unlock", "/add-word", "/remove-word", "/word-list", "/set-autorole", "/set-log-channel"])
 
-@app.route("/dashboard/<int:guild_id>/tickets")
+@app.route("/dashboard/<int:guild_id>/tickets", methods=["GET", "POST"])
 def section_tickets(guild_id):
-    return _section_form(guild_id, "tickets", "🎫 Tickets",
-        "Exactly where the ticket panel goes, where tickets live, and where ratings and new-ticket alerts go.",
-        [("panel_channel_id", "Panel channel"), ("ticket_category_id", "Ticket category"), ("rating_log_channel_id", "Rating log channel"), ("ticket_log_channel_id", "Ticket log channel")],
-        ["/setup-tickets", "/close", "/claim", "/ratings", "/leaderboard", "/recent-ratings"])
+    if "user" not in session: return redirect("/")
+    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+        return "You don't manage that server, or the bot isn't in it.", 403
+    database.init_db()
+    s = database.get_settings(guild_id)
+    msg = ""
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add_template":
+            name = (request.form.get("name") or "").strip()
+            if name:
+                def _id(v):
+                    try: return int(v)
+                    except Exception: return None
+                database.add_ticket_template(guild_id, name,
+                    request.form.get("description") or "",
+                    _id(request.form.get("staff_role_id")),
+                    _id(request.form.get("panel_channel_id")),
+                    _id(request.form.get("category_id")))
+                msg = f"<p>✅ Template '<b>{name}</b>' created.</p>"
+            else:
+                msg = "<p>⚠️ Give the template a name first.</p>"
+        elif action == "delete_template":
+            database.delete_ticket_template(int(request.form.get("template_id")), guild_id)
+            msg = "<p>✅ Template deleted.</p>"
+        elif action == "post_panel":
+            msg = _post_ticket_panel(guild_id, s)
+    templates = database.list_ticket_templates(guild_id)
+    rows = "".join([f"""<div class="card"><h3>🎫 {t['name']}</h3>
+        <p>{t.get('description') or 'No description.'}</p>
+        <p>Staff role: {t.get('staff_role_id') or 'server default'} • Panel channel: {t.get('panel_channel_id') or 'server default'} • Category: {t.get('category_id') or 'server default'}</p>
+        <form method="post"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button>Delete template</button></form></div>""" for t in templates]) or "<p>No templates yet — members see the built-in topics (General Help, Report a Player, Bug Report, Billing, Appeal, Something Else) until you add one.</p>"
+    body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>🎫 Tickets</h2>
+    <p>Make ticket templates here and they show up as the dropdown on your ticket panel — no Discord command needed. Each template can have its own staff role, panel channel and category. When a ticket closes, the owner rates it 1-5 ⭐.</p>
+    <form method="post"><input type="hidden" name="action" value="post_panel"><button>📣 Post / update the ticket panel in Discord</button></form>
+    <p>Posts the panel to the panel channel in your server settings (set it below). Run this after adding or deleting templates.</p></div>
+    <div class="card"><h3>Your ticket templates</h3>{rows}</div>
+    <div class="card"><h3>＋ New template</h3>
+    <form method="post"><input type="hidden" name="action" value="add_template">
+    <label>Template name (shows in the dropdown)<input name="name" placeholder="e.g. Report a Player" maxlength="100"></label>
+    <label>Description<input name="description" placeholder="e.g. Report someone breaking the rules" maxlength="100"></label>
+    <label>Staff role ID (optional — leave blank to use the server default)<input name="staff_role_id" placeholder="Discord ID number"></label>
+    <label>Panel channel ID (optional)<input name="panel_channel_id" placeholder="Discord ID number"></label>
+    <label>Category ID (optional — where ticket channels go)<input name="category_id" placeholder="Discord ID number"></label>
+    <button>Create template</button></form>
+    <p>Enter Discord IDs (right-click a channel/role &gt; Copy ID, with Developer Mode on).</p></div>
+    <div class="card"><h3>Server ticket settings</h3>
+    <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/tickets">
+    <label>Staff role ID <input name="staff_role_id" value="{s.get('staff_role_id') or ''}" placeholder="Discord ID number"></label>
+    <label>Panel channel ID <input name="panel_channel_id" value="{s.get('panel_channel_id') or ''}" placeholder="Discord ID number"></label>
+    <label>Ticket category ID <input name="ticket_category_id" value="{s.get('ticket_category_id') or ''}" placeholder="Discord ID number"></label>
+    <label>Rating log channel ID <input name="rating_log_channel_id" value="{s.get('rating_log_channel_id') or ''}" placeholder="Discord ID number"></label>
+    <label>Ticket log channel ID <input name="ticket_log_channel_id" value="{s.get('ticket_log_channel_id') or ''}" placeholder="Discord ID number"></label>
+    <button>Save settings</button></form>
+    <p><b>Used in Discord:</b> /setup-tickets • /close • /claim • /ratings • /leaderboard • /recent-ratings</p></div>"""
+    return _render(body, guild_id=guild_id, active="tickets")
+
+def _post_ticket_panel(guild_id, s):
+    """Post the ticket panel straight from the dashboard, using the bot token (server-side only)."""
+    token = os.getenv("DISCORD_TOKEN")
+    panel_channel = s.get("panel_channel_id")
+    if not token:
+        return "<p>⚠️ Bot token isn't set on the host, so the panel can't be posted from here — use /setup-tickets in Discord instead.</p>"
+    if not panel_channel:
+        return "<p>⚠️ Set the panel channel ID below first, then post the panel.</p>"
+    templates = database.list_ticket_templates(guild_id)
+    if templates:
+        options = [{"label": t["name"][:100], "value": f"tpl_{t['id']}", "description": (t.get("description") or "")[:100]} for t in templates]
+    else:
+        options = [{"label": "💬 General Help", "value": "general", "description": "I need help with something"},
+                   {"label": "🚨 Report a Player", "value": "report", "description": "Report someone breaking the rules"},
+                   {"label": "🐛 Bug Report", "value": "bug", "description": "Something in the server / bot is broken"},
+                   {"label": "💳 Billing / Purchase", "value": "billing", "description": "Help with a purchase, order or payment"},
+                   {"label": "⚖️ Appeal a Punishment", "value": "appeal", "description": "Appeal a ban, timeout or warning"},
+                   {"label": "✨ Something Else", "value": "other", "description": "Anything that doesn't fit above"}]
+    try:
+        r = requests.post(f"{API}/channels/{panel_channel}/messages",
+            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+            json={"embeds": [{"title": "🎫 Need Help?", "description": "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards.", "color": 5793266}],
+                  "components": [{"type": 1, "components": [{"type": 3, "custom_id": "ticket_topic_select", "placeholder": "What do you need help with? Pick one...", "options": options}]}]},
+            timeout=10)
+    except Exception as e:
+        return f"<p>⚠️ Couldn't post the panel: {e}</p>"
+    if r.ok:
+        return "<p>✅ Ticket panel posted in Discord.</p>"
+    return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
 
 @app.route("/dashboard/<int:guild_id>/applications")
 def section_applications(guild_id):

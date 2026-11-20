@@ -75,6 +75,15 @@ def init_db():
         guild_id INTEGER, user_id INTEGER,
         answers TEXT, status TEXT DEFAULT 'pending', created_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS ticket_templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER,
+        name TEXT,
+        description TEXT,
+        staff_role_id INTEGER,
+        panel_channel_id INTEGER,
+        category_id INTEGER
+    );
     CREATE TABLE IF NOT EXISTS message_days (
         guild_id INTEGER, user_id INTEGER,
         day TEXT, -- YYYY-MM-DD (UTC)
@@ -341,3 +350,24 @@ def recent_tickets(guild_id, limit=5):
     rows = cur.execute("SELECT channel_id, owner_id, status FROM tickets WHERE guild_id=? ORDER BY channel_id DESC LIMIT ?", (guild_id, limit)).fetchall()
     c.close()
     return [{"channel_id": r["channel_id"], "owner_id": r["owner_id"], "status": r["status"]} for r in rows]
+
+def add_ticket_template(guild_id, name, description="", staff_role_id=None, panel_channel_id=None, category_id=None):
+    c = _conn(); cur = c.cursor()
+    cur.execute("INSERT INTO ticket_templates (guild_id, name, description, staff_role_id, panel_channel_id, category_id) VALUES (?,?,?,?,?,?)",
+                (guild_id, name, description, staff_role_id, panel_channel_id, category_id))
+    c.commit(); tid = cur.lastrowid; c.close(); return tid
+
+def list_ticket_templates(guild_id):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT * FROM ticket_templates WHERE guild_id=? ORDER BY id", (guild_id,)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def get_ticket_template(template_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    r = cur.execute("SELECT * FROM ticket_templates WHERE id=? AND guild_id=?", (template_id, guild_id)).fetchone()
+    c.close(); return dict(r) if r else None
+
+def delete_ticket_template(template_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("DELETE FROM ticket_templates WHERE id=? AND guild_id=?", (template_id, guild_id))
+    c.commit(); c.close()

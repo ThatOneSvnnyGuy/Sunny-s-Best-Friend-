@@ -178,23 +178,39 @@ TOPICS = [
     ("other", "✨ Something Else", "Anything that doesn't fit above"),
 ]
 
+def panel_options(guild_id):
+    """Dropdown options: ticket templates made in the dashboard, or the built-in topics."""
+    templates = database.list_ticket_templates(guild_id)
+    if templates:
+        return [(f"tpl_{t['id']}", t["name"][:100], (t.get("description") or "")[:100]) for t in templates]
+    return TOPICS
+
 class TicketTopicSelect(discord.ui.Select):
-    def __init__(self):
+    def __init__(self, guild_id=None):
+        opts = panel_options(guild_id) if guild_id else TOPICS
         super().__init__(
             placeholder="What do you need help with? Pick one...",
             custom_id="ticket_topic_select",
-            options=[discord.SelectOption(label=label, value=value, description=desc) for value, label, desc in TOPICS],
+            options=[discord.SelectOption(label=label, value=value, description=desc) for value, label, desc in opts],
         )
     async def callback(self, interaction: discord.Interaction):
         topic = self.values[0]
-        label = next(l for v, l, _ in TOPICS if v == topic)
+        label = topic
+        for v, l, _ in panel_options(interaction.guild_id):
+            if v == topic:
+                label = l
         await create_ticket_for(interaction, topic, label)
 
 async def create_ticket_for(interaction: discord.Interaction, topic: str, label: str):
     guild = interaction.guild
     s = database.get_settings(guild.id)
-    category = guild.get_channel(s.get("ticket_category_id")) if s.get("ticket_category_id") else None
-    staff_role = guild.get_role(s.get("staff_role_id")) if s.get("staff_role_id") else None
+    # A dashboard template can override the staff role / category for its own tickets
+    tpl = None
+    if topic.startswith("tpl_"):
+        try: tpl = database.get_ticket_template(int(topic[4:]), guild.id)
+        except Exception: tpl = None
+    category = guild.get_channel((tpl or {}).get("category_id") or s.get("ticket_category_id")) if ((tpl or {}).get("category_id") or s.get("ticket_category_id")) else None
+    staff_role = guild.get_role((tpl or {}).get("staff_role_id") or s.get("staff_role_id")) if ((tpl or {}).get("staff_role_id") or s.get("staff_role_id")) else None
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -216,9 +232,9 @@ async def create_ticket_for(interaction: discord.Interaction, topic: str, label:
     await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
 class TicketPanel(discord.ui.View):
-    def __init__(self):
+    def __init__(self, guild_id=None):
         super().__init__(timeout=None)
-        self.add_item(TicketTopicSelect())
+        self.add_item(TicketTopicSelect(guild_id))
 
 class Tickets(commands.Cog):
     def __init__(self, bot): self.bot = bot
@@ -237,7 +253,7 @@ class Tickets(commands.Cog):
         database.set_setting(interaction.guild_id, "ticket_log_channel_id", ticket_log_channel.id)
         if category: database.set_setting(interaction.guild_id, "ticket_category_id", category.id)
         e = discord.Embed(title="🎫 Need Help?", description="Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards.", color=discord.Color.blurple())
-        await panel_channel.send(embed=e, view=TicketPanel())
+        await panel_channel.send(embed=e, view=TicketPanel(interaction.guild_id))
         await interaction.response.send_message(
             f"✅ Tickets set up:\n"
             f"• Panel posted in {panel_channel.mention}\n"
