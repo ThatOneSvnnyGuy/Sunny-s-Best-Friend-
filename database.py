@@ -113,6 +113,11 @@ def init_db():
         count INTEGER DEFAULT 0,
         PRIMARY KEY (guild_id, user_id, day)
     );
+    CREATE TABLE IF NOT EXISTS scan_progress (
+        guild_id INTEGER, channel_id INTEGER,
+        oldest_id INTEGER, -- oldest message id already counted; -1 = channel fully scanned
+        PRIMARY KEY (guild_id, channel_id)
+    );
     """)
     c.commit()
     try: cur.execute("ALTER TABLE applications ADD COLUMN template_id INTEGER")
@@ -313,6 +318,40 @@ def record_messages_bulk(guild_id, entries):
         "INSERT INTO message_days (guild_id,user_id,day,count) VALUES (?,?,?,?) "
         "ON CONFLICT(guild_id,user_id,day) DO UPDATE SET count=count+excluded.count",
         [(guild_id, uid, day, n) for (uid, day), n in counts.items()])
+    c.commit(); c.close()
+
+# --- history scan progress (resumable, no double-counting) ---
+def get_scan_progress(guild_id, channel_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("SELECT oldest_id FROM scan_progress WHERE guild_id=? AND channel_id=?", (guild_id, channel_id))
+    row = cur.fetchone(); c.close()
+    return row[0] if row else None
+
+def set_scan_progress(guild_id, channel_id, oldest_id):
+    c = _conn()
+    c.execute("INSERT INTO scan_progress VALUES (?,?,?) "
+              "ON CONFLICT(guild_id,channel_id) DO UPDATE SET oldest_id=excluded.oldest_id",
+              (guild_id, channel_id, oldest_id))
+    c.commit(); c.close()
+
+def clear_messages_before(guild_id, day):
+    """Drop counted rows older than `day` (YYYY-MM-DD) for a guild — used
+    before a clean re-scan so interrupted scans can't double-count."""
+    c = _conn()
+    c.execute("DELETE FROM message_days WHERE guild_id=? AND day<?", (guild_id, day))
+    c.commit(); c.close()
+
+def has_scan_progress(guild_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("SELECT 1 FROM scan_progress WHERE guild_id=? LIMIT 1", (guild_id,))
+    row = cur.fetchone(); c.close()
+    return row is not None
+
+def clear_messages(guild_id):
+    """Wipe all counted rows for a guild (used once, before the first
+    clean scan, to drop counts polluted by older scan versions)."""
+    c = _conn()
+    c.execute("DELETE FROM message_days WHERE guild_id=?", (guild_id,))
     c.commit(); c.close()
 
 def get_message_stats(guild_id, user_id, now=None):

@@ -16,28 +16,51 @@ class Messages(commands.Cog):
         self._scanning = set()  # guild ids with a scan already running
 
     async def _scan_guild(self, guild, announce=False):
-        """Count every message in the server's history, once, silently.
-        Skips guilds already scanned (flag in settings) and never runs
-        twice at once."""
+        """Count a server's pre-join message history, silently, without
+        blocking commands and without ever double-counting:
+        - Only messages from BEFORE the bot joined are scanned (everything
+          after that is already counted live as it arrives).
+        - Writes happen in small batches on a worker thread, so the bot
+          keeps answering commands while the scan runs.
+        - A per-channel watermark is saved as it goes, so if the bot
+          restarts mid-scan it resumes where it left off instead of
+          starting over. Rows from any earlier partial scan are cleared
+          first, so nothing gets counted twice."""
         if guild.id in self._scanning:
             return
         if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "1":
             return
         self._scanning.add(guild.id)
-        total = 0
-        channels = 0
         try:
+            joined = guild.me.joined_at if guild.me else None
+            # First clean scan for this guild: drop any counts left by the
+            # older scan versions (they counted everything, including
+            # messages already counted live, so the numbers were inflated).
+            # Once the new scan has started, its watermarks exist and later
+            # restarts resume instead of wiping.
+            if not await asyncio.to_thread(database.has_scan_progress, guild.id):
+                await asyncio.to_thread(database.clear_messages, guild.id)
             for ch in guild.text_channels:
-                entries = []
+                oldest = await asyncio.to_thread(database.get_scan_progress, guild.id, ch.id)
+                if oldest == -1:
+                    continue
+                before = discord.Object(id=oldest) if oldest else None
+                batch = []
                 try:
-                    async for msg in ch.history(limit=None):
-                        if msg.author.bot:
-                            continue
-                        entries.append((msg.author.id, msg.created_at.strftime("%Y-%m-%d")))
-                        total += 1
-                    if entries:
-                        database.record_messages_bulk(guild.id, entries)
-                    channels += 1
+                    async for msg in ch.history(limit=None, before=before):
+                        if joined is not None and msg.created_at >= joined:
+                            continue  # counted live already, skip
+                        oldest = msg.id
+                        if not msg.author.bot:
+                            batch.append((msg.author.id, msg.created_at.strftime("%Y-%m-%d")))
+                        if len(batch) >= 500:
+                            await asyncio.to_thread(database.record_messages_bulk, guild.id, batch)
+                            await asyncio.to_thread(database.set_scan_progress, guild.id, ch.id, oldest)
+                            batch = []
+                    if batch:
+                        await asyncio.to_thread(database.record_messages_bulk, guild.id, batch)
+                        await asyncio.to_thread(database.set_scan_progress, guild.id, ch.id, oldest)
+                    await asyncio.to_thread(database.set_scan_progress, guild.id, ch.id, -1)
                 except Exception:
                     continue
                 await asyncio.sleep(0)
