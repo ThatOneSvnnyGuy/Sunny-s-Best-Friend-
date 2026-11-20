@@ -133,7 +133,7 @@ class Faith(commands.Cog):
     async def _wait(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="setup-faith", description="Set up daily verse + prayer — pick the channels, roles to mention, and the time, like tickets (Admin)")
+    @app_commands.command(name="setup-faith", description="Set up daily verse + prayer: channels, mention roles, and time (Admin)")
     @app_commands.describe(
         channel="Main channel for the daily verse + prayer",
         verse_channel="Optional: separate channel just for the verse",
