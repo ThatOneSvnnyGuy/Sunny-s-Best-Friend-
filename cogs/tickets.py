@@ -45,17 +45,21 @@ class FeedbackModal(discord.ui.Modal, title="Rate your support"):
     def __init__(self, stars: int, channel_id: int, staff_id):
         super().__init__(); self.stars = stars; self.channel_id = channel_id; self.staff_id = staff_id
     async def on_submit(self, interaction: discord.Interaction):
-        guild = interaction.guild
         ticket = database.get_ticket(self.channel_id)
         if not ticket:
             await interaction.response.send_message("This ticket is already gone.", ephemeral=True); return
-        ok = database.add_rating(guild.id, self.channel_id, interaction.user.id, self.staff_id, self.stars, str(self.feedback) or "")
+        # In a DM, interaction.guild is None - resolve the guild from the ticket row instead
+        guild_id = ticket["guild_id"]
+        guild = interaction.guild or interaction.client.get_guild(guild_id)
+        ok = database.add_rating(guild_id, self.channel_id, interaction.user.id, self.staff_id, self.stars, str(self.feedback) or "")
         if not ok:
             await interaction.response.send_message("You already rated this ticket.", ephemeral=True); return
         # Instantly close ALL rating opportunities for this ticket (channel + DM)
         await _close_all_rating_views(self.channel_id, self.stars)
         await interaction.response.send_message(f"Thanks! You rated this ticket {stars_text(self.stars)} ({self.stars}/5).", ephemeral=True)
         # Log it
+        if guild is None:
+            return
         s = database.get_settings(guild.id)
         log_id = s.get("rating_log_channel_id")
         if log_id:
@@ -106,7 +110,12 @@ class RatingView(discord.ui.View):
         await _close_all_rating_views(self.channel_id, None)
         await interaction.response.send_message("No rating given. Closing ticket...", ephemeral=True)
         await asyncio.sleep(5)
-        ch = interaction.guild.get_channel(self.channel_id)
+        # In a DM, interaction.guild is None - resolve the guild from the ticket row instead
+        ticket = database.get_ticket(self.channel_id)
+        guild = interaction.guild or (interaction.client.get_guild(ticket["guild_id"]) if ticket else None)
+        if guild is None:
+            return
+        ch = guild.get_channel(self.channel_id)
         if ch:
             try: await ch.delete(reason="Ticket closed, rating skipped")
             except Exception: pass
