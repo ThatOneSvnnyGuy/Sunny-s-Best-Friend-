@@ -126,7 +126,7 @@ def init_db():
     except Exception: pass
     c.commit()
     # Migrations for older bot.db files (new columns)
-    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT"]:
+    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_verse_role_id INTEGER", "faith_prayer_role_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT"]:
         try: cur.execute(f"ALTER TABLE settings ADD COLUMN {col}")
         except Exception: pass
     c.commit(); c.close()

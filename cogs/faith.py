@@ -79,7 +79,10 @@ class Faith(commands.Cog):
     async def _post_daily(self, guild):
         """Post today's verse + prayer to this server's configured channels.
         Verse and prayer can go to different channels; both fall back to
-        the main faith channel. Returns True if anything was posted."""
+        the main faith channel. Each post can also mention a role (set in
+        /setup-faith) — the mention goes in the message text so it actually
+        pings, since mentions inside an embed don't notify. Returns True
+        if anything was posted."""
         s = database.get_settings(guild.id)
         main_id = s.get("faith_channel_id")
         verse_id = s.get("faith_verse_channel_id") or main_id
@@ -87,25 +90,21 @@ class Faith(commands.Cog):
         if not verse_id and not prayer_id:
             return False
         verse_e, prayer_e = self._daily_embeds()
+        verse_role = guild.get_role(s.get("faith_verse_role_id")) if s.get("faith_verse_role_id") else None
+        prayer_role = guild.get_role(s.get("faith_prayer_role_id")) if s.get("faith_prayer_role_id") else None
         posted = False
         if verse_id:
             ch = guild.get_channel(verse_id)
             if ch:
                 try:
-                    await ch.send(embed=verse_e); posted = True
+                    await ch.send(content=verse_role.mention if verse_role else None, embed=verse_e); posted = True
                 except Exception:
                     pass
         if prayer_id:
             ch = guild.get_channel(prayer_id)
-            if ch and ch.id != verse_id:
+            if ch:
                 try:
-                    await ch.send(embed=prayer_e); posted = True
-                except Exception:
-                    pass
-            elif ch and ch.id == verse_id:
-                # Same channel for both: post the prayer as a second message.
-                try:
-                    await ch.send(embed=prayer_e); posted = True
+                    await ch.send(content=prayer_role.mention if prayer_role else None, embed=prayer_e); posted = True
                 except Exception:
                     pass
         return posted
@@ -134,16 +133,20 @@ class Faith(commands.Cog):
     async def _wait(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="setup-faith", description="Set up daily verse + prayer — pick the channels and the time, like tickets (Admin)")
+    @app_commands.command(name="setup-faith", description="Set up daily verse + prayer — pick the channels, roles to mention, and the time, like tickets (Admin)")
     @app_commands.describe(
         channel="Main channel for the daily verse + prayer",
         verse_channel="Optional: separate channel just for the verse",
         prayer_channel="Optional: separate channel just for the prayer",
+        verse_role="Optional: role to mention with the verse",
+        prayer_role="Optional: role to mention with the prayer",
         hour="What hour (Central, 0-23) it posts — default 9 AM")
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_faith(self, i: discord.Interaction, channel: discord.TextChannel,
                           verse_channel: discord.TextChannel = None,
                           prayer_channel: discord.TextChannel = None,
+                          verse_role: discord.Role = None,
+                          prayer_role: discord.Role = None,
                           hour: int = 9):
         if hour < 0 or hour > 23:
             await i.response.send_message("Hour has to be 0-23 (Central time).", ephemeral=True); return
@@ -153,6 +156,10 @@ class Faith(commands.Cog):
             database.set_setting(i.guild_id, "faith_verse_channel_id", verse_channel.id)
         if prayer_channel:
             database.set_setting(i.guild_id, "faith_prayer_channel_id", prayer_channel.id)
+        if verse_role:
+            database.set_setting(i.guild_id, "faith_verse_role_id", verse_role.id)
+        if prayer_role:
+            database.set_setting(i.guild_id, "faith_prayer_role_id", prayer_role.id)
         verse_dest = verse_channel.mention if verse_channel else channel.mention
         prayer_dest = prayer_channel.mention if prayer_channel else channel.mention
         when = f"{hour}:00 {'AM' if hour < 12 else 'PM'} Central"
@@ -164,22 +171,22 @@ class Faith(commands.Cog):
         verse_e, prayer_e = self._daily_embeds()
         try:
             dest = i.guild.get_channel((verse_channel.id if verse_channel else channel.id))
-            if dest: await dest.send(embed=verse_e)
+            if dest: await dest.send(content=verse_role.mention if verse_role else None, embed=verse_e)
             dest2 = i.guild.get_channel((prayer_channel.id if prayer_channel else channel.id))
-            if dest2: await dest2.send(embed=prayer_e)
+            if dest2: await dest2.send(content=prayer_role.mention if prayer_role else None, embed=prayer_e)
         except Exception:
             pass
         await i.response.send_message(
             f"🙏 Daily verse + prayer set up:\n"
-            f"• Verse goes to {verse_dest}\n"
-            f"• Prayer goes to {prayer_dest}\n"
+            f"• Verse goes to {verse_dest}" + (f" (mentions {verse_role.mention})" if verse_role else "") + "\n"
+            f"• Prayer goes to {prayer_dest}" + (f" (mentions {prayer_role.mention})" if prayer_role else "") + "\n"
             f"• Every day at {when}\n"
             f"(I just posted a sample in each channel so you can see it.)", ephemeral=True)
 
     @app_commands.command(name="disable-faith", description="Turn off the daily verse + prayer posts (Admin)")
     @app_commands.checks.has_permissions(administrator=True)
     async def disable_faith(self, i: discord.Interaction):
-        for key in ("faith_channel_id", "faith_verse_channel_id", "faith_prayer_channel_id"):
+        for key in ("faith_channel_id", "faith_verse_channel_id", "faith_prayer_channel_id", "faith_verse_role_id", "faith_prayer_role_id"):
             database.set_setting(i.guild_id, key, None)
         await i.response.send_message("🙏 Daily verse + prayer turned off. Run `/setup-faith` to turn it back on.", ephemeral=True)
 
