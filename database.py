@@ -101,6 +101,12 @@ def init_db():
         content TEXT,
         channel_id INTEGER
     );
+    CREATE TABLE IF NOT EXISTS auto_replies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER,
+        trigger TEXT,
+        response TEXT
+    );
     CREATE TABLE IF NOT EXISTS message_days (
         guild_id INTEGER, user_id INTEGER,
         day TEXT, -- YYYY-MM-DD (UTC)
@@ -437,4 +443,20 @@ def get_message_template(template_id, guild_id):
 def delete_message_template(template_id, guild_id):
     c = _conn(); cur = c.cursor()
     cur.execute("DELETE FROM message_templates WHERE id=? AND guild_id=?", (template_id, guild_id))
+    c.commit(); c.close()
+
+def add_auto_reply(guild_id, trigger, response):
+    c = _conn(); cur = c.cursor()
+    cur.execute("INSERT INTO auto_replies (guild_id, trigger, response) VALUES (?,?,?)",
+                (guild_id, trigger.lower().strip(), response))
+    c.commit(); tid = cur.lastrowid; c.close(); return tid
+
+def list_auto_replies(guild_id):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT * FROM auto_replies WHERE guild_id=? ORDER BY id", (guild_id,)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def delete_auto_reply(reply_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("DELETE FROM auto_replies WHERE id=? AND guild_id=?", (reply_id, guild_id))
     c.commit(); c.close()

@@ -538,7 +538,21 @@ def section_messages(guild_id):
             msg = _send(ch, t.get("title") if t else "", t.get("content") if t else "")
         elif action == "send_once":
             msg = _send(request.form.get("channel_id"), request.form.get("title"), request.form.get("content"))
+        elif action == "add_reply":
+            trig = (request.form.get("trigger") or "").strip()
+            resp = (request.form.get("response") or "").strip()
+            if trig and resp:
+                database.add_auto_reply(guild_id, trig, resp)
+                msg = f"<p>✅ Auto-reply added: when someone says <b>{trig}</b>, I'll reply.</p>"
+            else:
+                msg = "<p>⚠️ Fill in both the trigger and the reply.</p>"
+        elif action == "delete_reply":
+            database.delete_auto_reply(int(request.form.get("reply_id")), guild_id)
+            msg = "<p>✅ Auto-reply deleted.</p>"
     templates = database.list_message_templates(guild_id)
+    _ars = database.list_auto_replies(guild_id)
+    arows = "".join([f"""<div class="rowline"><span>When someone says <b>{r['trigger']}</b> → {r['response'][:100]}</span>
+        <form method="post"><input type="hidden" name="action" value="delete_reply"><input type="hidden" name="reply_id" value="{r['id']}"><button class="danger">Delete</button></form></div>""" for r in _ars]) or "<p class='muted'>No auto-replies yet.</p>"
     trows = ""
     for t in templates:
         trows += f"""<div class="card"><h3>💬 {t['name']}</h3>
@@ -556,6 +570,13 @@ def section_messages(guild_id):
     <label>Title (optional — makes it an embed)<input name="title" placeholder="e.g. Server Rules"></label>
     <label>Message <textarea name="content" rows="4" placeholder="Type your message..."></textarea></label>
     <button>📣 Send to Discord</button></form></div>
+    <div class="card"><h3>🤖 Automatic replies</h3>
+    <p class="muted">When someone's message contains the trigger, the bot replies with your response. @ the bot and it answers on its own too — prefix, help, tickets, applying.</p>
+    {arows}
+    <form method="post"><input type="hidden" name="action" value="add_reply">
+    <label>Trigger — when someone says...<input name="trigger" placeholder="e.g. what time is the event"></label>
+    <label>Reply<input name="response" placeholder="e.g. The event starts Friday at 7pm!"></label>
+    <button>Add auto-reply</button></form></div>
     <h3>Your message templates</h3>{trows or "<p class='muted'>No templates yet.</p>"}
     <div class="card"><h3>＋ New template</h3>
     <form method="post"><input type="hidden" name="action" value="add_template">
