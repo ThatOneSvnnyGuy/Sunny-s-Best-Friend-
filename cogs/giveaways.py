@@ -18,7 +18,8 @@ class Giveaways(commands.Cog):
         ch_id = s.get("welcome_channel_id")
         ch = member.guild.get_channel(ch_id) if ch_id else None
         if ch:
-            await ch.send(f"👋 Welcome {member.mention} to **{member.guild.name}**! Open a ticket if you need help.")
+            tpl = s.get("welcome_message") or "👋 Welcome {user} to **{server}**! Open a ticket if you need help."
+            await ch.send(tpl.replace("{user}", member.mention).replace("{server}", member.guild.name))
     @app_commands.command(name="giveaway", description="Start a giveaway (duration like 10m, 1h)")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def giveaway(self, i: discord.Interaction, duration: str, prize: str):

@@ -93,6 +93,14 @@ def init_db():
         review_channel_id INTEGER,
         questions TEXT
     );
+    CREATE TABLE IF NOT EXISTS message_templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER,
+        name TEXT,
+        title TEXT,
+        content TEXT,
+        channel_id INTEGER
+    );
     CREATE TABLE IF NOT EXISTS message_days (
         guild_id INTEGER, user_id INTEGER,
         day TEXT, -- YYYY-MM-DD (UTC)
@@ -105,7 +113,7 @@ def init_db():
     except Exception: pass
     c.commit()
     # Migrations for older bot.db files (new columns)
-    for col in ["faith_channel_id INTEGER", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER"]:
+    for col in ["faith_channel_id INTEGER", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT"]:
         try: cur.execute(f"ALTER TABLE settings ADD COLUMN {col}")
         except Exception: pass
     c.commit(); c.close()
@@ -408,4 +416,25 @@ def get_application_template(template_id, guild_id):
 def delete_application_template(template_id, guild_id):
     c = _conn(); cur = c.cursor()
     cur.execute("DELETE FROM application_templates WHERE id=? AND guild_id=?", (template_id, guild_id))
+    c.commit(); c.close()
+
+def add_message_template(guild_id, name, title="", content="", channel_id=None):
+    c = _conn(); cur = c.cursor()
+    cur.execute("INSERT INTO message_templates (guild_id, name, title, content, channel_id) VALUES (?,?,?,?,?)",
+                (guild_id, name, title, content, channel_id))
+    c.commit(); tid = cur.lastrowid; c.close(); return tid
+
+def list_message_templates(guild_id):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT * FROM message_templates WHERE guild_id=? ORDER BY id", (guild_id,)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def get_message_template(template_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    r = cur.execute("SELECT * FROM message_templates WHERE id=? AND guild_id=?", (template_id, guild_id)).fetchone()
+    c.close(); return dict(r) if r else None
+
+def delete_message_template(template_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("DELETE FROM message_templates WHERE id=? AND guild_id=?", (template_id, guild_id))
     c.commit(); c.close()

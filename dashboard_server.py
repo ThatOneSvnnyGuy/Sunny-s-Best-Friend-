@@ -95,6 +95,7 @@ def _sidebar(guild_id=None, active="servers"):
         + a("/applications", "📝 Applications", "applications")
         + '<div class="group">COMMUNITY</div>'
         + a("/community", "👋 Welcome & starboard", "community")
+        + a("/messages", "💬 Messages", "messages")
         + '<div class="group">FAITH & FUN</div>'
         + a("/faith", "🙏 Daily verse & prayer", "faith")
         + '<div class="group">IN DISCORD</div>'
@@ -489,12 +490,124 @@ def section_applications(guild_id):
     <p><b>Used in Discord:</b> /setup-applications • /apply • /applications</p></div>"""
     return _render(body, guild_id=guild_id, active="applications")
 
-@app.route("/dashboard/<int:guild_id>/community")
+@app.route("/dashboard/<int:guild_id>/messages", methods=["GET", "POST"])
+def section_messages(guild_id):
+    if "user" not in session: return redirect("/")
+    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+        return "You don't manage that server, or the bot isn't in it.", 403
+    database.init_db()
+    s = database.get_settings(guild_id)
+    msg = ""
+    token = os.getenv("DISCORD_TOKEN")
+    def _send(channel_id, title, content):
+        if not token:
+            return "<p>⚠️ Bot token isn't set on the host, so messages can't be sent from here.</p>"
+        if not channel_id or not (content or "").strip():
+            return "<p>⚠️ Pick a channel and write something first.</p>"
+        payload = {"content": content}
+        if (title or "").strip():
+            payload = {"embeds": [{"title": title, "description": content, "color": 5793266}]}
+        try:
+            r = requests.post(f"{API}/channels/{channel_id}/messages",
+                headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+                json=payload, timeout=10)
+        except Exception as e:
+            return f"<p>⚠️ Couldn't send: {e}</p>"
+        return "<p>✅ Sent to Discord.</p>" if r.ok else f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add_template":
+            name = (request.form.get("name") or "").strip()
+            if name:
+                def _id(v):
+                    try: return int(v)
+                    except Exception: return None
+                database.add_message_template(guild_id, name,
+                    request.form.get("title") or "",
+                    request.form.get("content") or "",
+                    _id(request.form.get("channel_id")))
+                msg = f"<p>✅ Template '<b>{name}</b>' saved.</p>"
+            else:
+                msg = "<p>⚠️ Give the template a name first.</p>"
+        elif action == "delete_template":
+            database.delete_message_template(int(request.form.get("template_id")), guild_id)
+            msg = "<p>✅ Template deleted.</p>"
+        elif action == "send_template":
+            t = database.get_message_template(int(request.form.get("template_id")), guild_id)
+            ch = request.form.get("channel_id") or (t.get("channel_id") if t else None)
+            msg = _send(ch, t.get("title") if t else "", t.get("content") if t else "")
+        elif action == "send_once":
+            msg = _send(request.form.get("channel_id"), request.form.get("title"), request.form.get("content"))
+    templates = database.list_message_templates(guild_id)
+    trows = ""
+    for t in templates:
+        trows += f"""<div class="card"><h3>💬 {t['name']}</h3>
+        <p class="muted">{t.get('title') or 'No title'}</p><p>{t.get('content') or ''}</p>
+        <p class="muted">Default channel: {t.get('channel_id') or 'none set'}</p>
+        <form method="post"><input type="hidden" name="action" value="send_template"><input type="hidden" name="template_id" value="{t['id']}">
+        <label>Send to channel ID (leave blank to use its default)<input name="channel_id" placeholder="Discord channel ID number"></label>
+        <button>📣 Send this to Discord</button></form>
+        <form method="post"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button class="danger">Delete template</button></form></div>"""
+    body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>💬 Messages</h2>
+    <p>Save messages as templates — rules, announcements, event posts, anything — then send any of them to any channel in your server, straight from here. A template with a title sends as a nice embed; without one it sends as a plain message.</p></div>
+    <div class="card"><h3>✉️ Send a one-off message</h3>
+    <form method="post"><input type="hidden" name="action" value="send_once">
+    <label>Channel ID <input name="channel_id" placeholder="Discord channel ID number"></label>
+    <label>Title (optional — makes it an embed)<input name="title" placeholder="e.g. Server Rules"></label>
+    <label>Message <textarea name="content" rows="4" placeholder="Type your message..."></textarea></label>
+    <button>📣 Send to Discord</button></form></div>
+    <h3>Your message templates</h3>{trows or "<p class='muted'>No templates yet.</p>"}
+    <div class="card"><h3>＋ New template</h3>
+    <form method="post"><input type="hidden" name="action" value="add_template">
+    <label>Template name<input name="name" placeholder="e.g. Weekly announcement" maxlength="100"></label>
+    <label>Title (optional)<input name="title" placeholder="e.g. This week's events" maxlength="200"></label>
+    <label>Message <textarea name="content" rows="4" placeholder="Type the message..."></textarea></label>
+    <label>Default channel ID (optional)<input name="channel_id" placeholder="Discord channel ID number"></label>
+    <button>Save template</button></form></div>"""
+    return _render(body, guild_id=guild_id, active="messages")
+
+@app.route("/dashboard/<int:guild_id>/community", methods=["GET", "POST"])
 def section_community(guild_id):
-    return _section_form(guild_id, "community", "👋 Welcome & starboard",
-        "Where welcome messages and starred messages go.",
-        [("welcome_channel_id", "Welcome channel"), ("starboard_channel_id", "Starboard channel")],
-        ["/set-welcome", "/set-starboard", "/reaction-roles"])
+    if "user" not in session: return redirect("/")
+    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+        return "You don't manage that server, or the bot isn't in it.", 403
+    database.init_db()
+    s = database.get_settings(guild_id)
+    msg = ""
+    if request.method == "POST":
+        if request.form.get("action") == "test_welcome":
+            token = os.getenv("DISCORD_TOKEN")
+            ch = s.get("welcome_channel_id")
+            tpl = s.get("welcome_message") or "👋 Welcome {user} to **{server}**!"
+            if token and ch:
+                try:
+                    r = requests.post(f"{API}/channels/{ch}/messages",
+                        headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+                        json={"content": tpl.replace("{user}", "a new member").replace("{server}", "your server")}, timeout=10)
+                    msg = "<p>✅ Test welcome sent.</p>" if r.ok else f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
+                except Exception as e:
+                    msg = f"<p>⚠️ Couldn't send: {e}</p>"
+            else:
+                msg = "<p>⚠️ Set the welcome channel below first.</p>"
+        else:
+            wm = (request.form.get("welcome_message") or "").strip()
+            if wm:
+                database.set_setting(guild_id, "welcome_message", wm)
+            v = request.form.get("welcome_channel_id")
+            if v: database.set_setting(guild_id, "welcome_channel_id", int(v))
+            v = request.form.get("starboard_channel_id")
+            if v: database.set_setting(guild_id, "starboard_channel_id", int(v))
+            msg = "<p>✅ Saved.</p>"
+            s = database.get_settings(guild_id)
+    body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>👋 Welcome & starboard</h2>
+    <p>Write your own welcome message — it posts automatically when someone joins. Use <b>{{user}}</b> for the new member and <b>{{server}}</b> for your server name.</p>
+    <form method="post"><label>Welcome message<textarea name="welcome_message" rows="3" placeholder="👋 Welcome {{user}} to **{{server}}**! Open a ticket if you need help.">{s.get('welcome_message') or ''}</textarea></label>
+    <label>Welcome channel ID <input name="welcome_channel_id" value="{s.get('welcome_channel_id') or ''}" placeholder="Discord ID number"></label>
+    <label>Starboard channel ID <input name="starboard_channel_id" value="{s.get('starboard_channel_id') or ''}" placeholder="Discord ID number"></label>
+    <button>Save welcome settings</button></form>
+    <form method="post"><input type="hidden" name="action" value="test_welcome"><button>🧪 Send a test welcome</button></form></div>
+    <div class="card"><p><b>Used in Discord:</b> /set-welcome • /set-starboard • /reaction-roles</p></div>"""
+    return _render(body, guild_id=guild_id, active="community")
 
 @app.route("/dashboard/<int:guild_id>/faith")
 def section_faith(guild_id):
