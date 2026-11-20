@@ -51,6 +51,26 @@ class Messages(commands.Cog):
             return total, False
         return total, True
 
+    async def _channel_threads(self, ch):
+        """Every thread in a channel: active ones, public archived, and
+        PRIVATE archived (archived_threads only returns public ones by
+        default, so private threads were being missed entirely)."""
+        seen = set()
+        out = []
+        for t in list(getattr(ch, "threads", []) or []):
+            if t.id not in seen:
+                seen.add(t.id)
+                out.append(t)
+        for private in (False, True):
+            try:
+                async for t in ch.archived_threads(limit=None, private=private):
+                    if t.id not in seen:
+                        seen.add(t.id)
+                        out.append(t)
+            except Exception:
+                pass
+        return out
+
     async def _scan_guild(self, guild, announce=False):
         """Count a server's pre-join message history, silently, without
         blocking commands and without ever double-counting:
@@ -70,7 +90,7 @@ class Messages(commands.Cog):
         # flagged "1" (text channels only) gets scanned again — the
         # per-channel watermarks skip what's already done, so only the
         # new coverage is added, nothing is re-counted.
-        if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "3":
+        if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "4":
             return
         self._scanning.add(guild.id)
         try:
@@ -90,19 +110,23 @@ class Messages(commands.Cog):
                 total += n
                 all_done = all_done and ok
                 scanned += 1
-                # Threads in this channel (active + archived)
-                threads = list(getattr(ch, "threads", []) or [])
-                try:
-                    async for t in ch.archived_threads(limit=None):
-                        threads.append(t)
-                except Exception:
-                    pass
+                # Threads in this channel (active + public/private archived)
+                threads = await self._channel_threads(ch)
                 for t in threads:
                     n, ok = await self._scan_channel(guild, t, joined)
                     total += n
                     all_done = all_done and ok
                     scanned += 1
                 await asyncio.sleep(0)
+            try:
+                active = await guild.fetch_active_threads()
+                for t in active.threads:
+                    n, ok = await self._scan_channel(guild, t, joined)
+                    total += n
+                    all_done = all_done and ok
+                    scanned += 1
+            except Exception:
+                pass
             for ch in guild.voice_channels:
                 n, ok = await self._scan_channel(guild, ch, joined)
                 total += n
@@ -110,12 +134,7 @@ class Messages(commands.Cog):
                 scanned += 1
                 await asyncio.sleep(0)
             for ch in getattr(guild, "forum_channels", []) or []:
-                threads = list(getattr(ch, "threads", []) or [])
-                try:
-                    async for t in ch.archived_threads(limit=None):
-                        threads.append(t)
-                except Exception:
-                    pass
+                threads = await self._channel_threads(ch)
                 for t in threads:
                     n, ok = await self._scan_channel(guild, t, joined)
                     total += n
@@ -123,7 +142,7 @@ class Messages(commands.Cog):
                     scanned += 1
                 await asyncio.sleep(0)
             if all_done:
-                database.set_setting(guild.id, "messages_backfilled", "3")
+                database.set_setting(guild.id, "messages_backfilled", "4")
                 print(f"📊 History scan done for {guild.name}: {total:,} messages in {scanned} channels/threads.")
             else:
                 print(f"📊 History scan partial for {guild.name}: {total:,} messages so far, some channels failed and will be retried.")
