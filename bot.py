@@ -84,6 +84,21 @@ async def on_ready():
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching, name="/verse • /ticket • /help"))
 
+@bot.event
+async def on_command_error(ctx, error):
+    # Most commands are slash-only - if someone types !messages, tell them
+    # to use /messages instead of silently ignoring it.
+    if isinstance(error, commands.CommandNotFound):
+        name = (ctx.invoked_with or "").lower()
+        slash = {c.name for c in bot.tree.get_commands()}
+        if name in slash:
+            try:
+                await ctx.send(f"`!{name}` isn't a prefix command — use `/{name}` instead.")
+            except Exception:
+                pass
+        return
+    print(f"Command error in {ctx.command}: {error}")
+
 @bot.tree.error
 async def on_app_command_error(interaction, error):
     try:

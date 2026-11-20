@@ -4,7 +4,7 @@ No fake data - everything starts empty.
 """
 import sqlite3, time, os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "bot.db")
+DB_PATH = os.getenv("BOT_DB_PATH") or os.path.join(os.path.dirname(__file__), "bot.db")
 
 def _conn():
     c = sqlite3.connect(DB_PATH)
