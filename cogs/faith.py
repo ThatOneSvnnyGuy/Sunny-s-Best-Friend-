@@ -67,26 +67,121 @@ class Faith(commands.Cog):
     def cog_unload(self):
         self.daily_post.cancel()
 
-    @tasks.loop(time=datetime.time(hour=9, minute=0, tzinfo=CENTRAL))
-    async def daily_post(self):
+    def _daily_embeds(self):
         ref, text = verse_for_today()
         title, prayer = list(PRAYERS.values())[datetime.date.today().toordinal() % len(PRAYERS)]
+        verse_e = discord.Embed(title=f"📖 Daily Verse — {ref}", description=text, color=discord.Color.gold())
+        verse_e.set_footer(text="Sunny's Best Friend • Daily verse")
+        prayer_e = discord.Embed(title=f"🙏 Daily Prayer — {title}", description=prayer, color=discord.Color.gold())
+        prayer_e.set_footer(text="Sunny's Best Friend • Daily prayer")
+        return verse_e, prayer_e
+
+    async def _post_daily(self, guild):
+        """Post today's verse + prayer to this server's configured channels.
+        Verse and prayer can go to different channels; both fall back to
+        the main faith channel. Returns True if anything was posted."""
+        s = database.get_settings(guild.id)
+        main_id = s.get("faith_channel_id")
+        verse_id = s.get("faith_verse_channel_id") or main_id
+        prayer_id = s.get("faith_prayer_channel_id") or main_id
+        if not verse_id and not prayer_id:
+            return False
+        verse_e, prayer_e = self._daily_embeds()
+        posted = False
+        if verse_id:
+            ch = guild.get_channel(verse_id)
+            if ch:
+                try:
+                    await ch.send(embed=verse_e); posted = True
+                except Exception:
+                    pass
+        if prayer_id:
+            ch = guild.get_channel(prayer_id)
+            if ch and ch.id != verse_id:
+                try:
+                    await ch.send(embed=prayer_e); posted = True
+                except Exception:
+                    pass
+            elif ch and ch.id == verse_id:
+                # Same channel for both: post the prayer as a second message.
+                try:
+                    await ch.send(embed=prayer_e); posted = True
+                except Exception:
+                    pass
+        return posted
+
+    @tasks.loop(minutes=30)
+    async def daily_post(self):
+        # Runs every 30 min and posts once per day, in the hour each server
+        # chose (default 9 AM Central). The date guard stops double-posts
+        # even if the bot restarts mid-hour.
+        now = datetime.datetime.now(CENTRAL)
+        today = now.strftime("%Y-%m-%d")
         for guild in self.bot.guilds:
             s = database.get_settings(guild.id)
-            ch_id = s.get("faith_channel_id")
-            if not ch_id: continue
-            ch = guild.get_channel(ch_id)
-            if not ch: continue
-            e = discord.Embed(title="🙏 Daily Verse & Prayer", color=discord.Color.gold())
-            e.add_field(name=f"📖 {ref}", value=text, inline=False)
-            e.add_field(name=f"🙏 {title}", value=prayer, inline=False)
-            e.set_footer(text="Sunny's Best Friend • Daily at 9:00 AM Central")
-            try: await ch.send(embed=e)
-            except Exception: pass
+            if not (s.get("faith_channel_id") or s.get("faith_verse_channel_id") or s.get("faith_prayer_channel_id")):
+                continue
+            hour = s.get("faith_hour")
+            hour = hour if isinstance(hour, int) else 9
+            if now.hour != hour:
+                continue
+            if s.get("faith_last_posted") == today:
+                continue
+            if await self._post_daily(guild):
+                database.set_setting(guild.id, "faith_last_posted", today)
 
     @daily_post.before_loop
     async def _wait(self):
         await self.bot.wait_until_ready()
+
+    @app_commands.command(name="setup-faith", description="Set up daily verse + prayer — pick the channels and the time, like tickets (Admin)")
+    @app_commands.describe(
+        channel="Main channel for the daily verse + prayer",
+        verse_channel="Optional: separate channel just for the verse",
+        prayer_channel="Optional: separate channel just for the prayer",
+        hour="What hour (Central, 0-23) it posts — default 9 AM")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_faith(self, i: discord.Interaction, channel: discord.TextChannel,
+                          verse_channel: discord.TextChannel = None,
+                          prayer_channel: discord.TextChannel = None,
+                          hour: int = 9):
+        if hour < 0 or hour > 23:
+            await i.response.send_message("Hour has to be 0-23 (Central time).", ephemeral=True); return
+        database.set_setting(i.guild_id, "faith_channel_id", channel.id)
+        database.set_setting(i.guild_id, "faith_hour", hour)
+        if verse_channel:
+            database.set_setting(i.guild_id, "faith_verse_channel_id", verse_channel.id)
+        if prayer_channel:
+            database.set_setting(i.guild_id, "faith_prayer_channel_id", prayer_channel.id)
+        verse_dest = verse_channel.mention if verse_channel else channel.mention
+        prayer_dest = prayer_channel.mention if prayer_channel else channel.mention
+        when = f"{hour}:00 {'AM' if hour < 12 else 'PM'} Central"
+        if hour == 0: when = "12:00 AM Central"
+        elif hour == 12: when = "12:00 PM Central"
+        elif hour > 12: when = f"{hour - 12}:00 PM Central"
+        elif hour < 12: when = f"{hour}:00 AM Central"
+        # Post a sample right now so you can see it works, like the ticket panel.
+        verse_e, prayer_e = self._daily_embeds()
+        try:
+            dest = i.guild.get_channel((verse_channel.id if verse_channel else channel.id))
+            if dest: await dest.send(embed=verse_e)
+            dest2 = i.guild.get_channel((prayer_channel.id if prayer_channel else channel.id))
+            if dest2: await dest2.send(embed=prayer_e)
+        except Exception:
+            pass
+        await i.response.send_message(
+            f"🙏 Daily verse + prayer set up:\n"
+            f"• Verse goes to {verse_dest}\n"
+            f"• Prayer goes to {prayer_dest}\n"
+            f"• Every day at {when}\n"
+            f"(I just posted a sample in each channel so you can see it.)", ephemeral=True)
+
+    @app_commands.command(name="disable-faith", description="Turn off the daily verse + prayer posts (Admin)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def disable_faith(self, i: discord.Interaction):
+        for key in ("faith_channel_id", "faith_verse_channel_id", "faith_prayer_channel_id"):
+            database.set_setting(i.guild_id, key, None)
+        await i.response.send_message("🙏 Daily verse + prayer turned off. Run `/setup-faith` to turn it back on.", ephemeral=True)
 
     @app_commands.command(name="verse", description="Get a random Bible verse")
     async def verse(self, i: discord.Interaction):
