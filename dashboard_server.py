@@ -81,6 +81,23 @@ def _sidebar(guild_id=None, active="servers"):
 def _render(body, guild_id=None, active="servers"):
     return render_template_string(PAGE, body=body, sidebar=_sidebar(guild_id, active))
 
+def _guild_live(guild_id):
+    """Member counts straight from Discord, using the bot token (server-side only)."""
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        return {}
+    try:
+        r = requests.get(f"{API}/guilds/{guild_id}?with_counts=true",
+                         headers={"Authorization": f"Bot {token}"}, timeout=10)
+        if r.ok:
+            j = r.json()
+            return {"members": j.get("approximate_member_count") or j.get("member_count"),
+                    "online": j.get("approximate_presence_count"),
+                    "name": j.get("name")}
+    except Exception:
+        pass
+    return {}
+
 def _api(token, path):
     r = requests.get(f"{API}{path}", headers={"Authorization": f"Bearer {token}"}, timeout=10)
     return r.json() if r.ok else None
@@ -157,20 +174,37 @@ def dashboard(guild_id):
     s = database.get_settings(guild_id)
     saved = "<p>✅ Saved.</p>" if request.args.get("saved") else ""
     prefix = s.get("prefix") or "!"
+    st = database.guild_stats(guild_id)
+    live = _guild_live(guild_id)
+    name = live.get("name") or f"Server {guild_id}"
     def row(label, key):
         v = s.get(key) or "not set"
         return f"<p><b>{label}:</b> {v}</p>"
+    def user_list(rows, key="n", label=""):
+        return "".join([f"<p>&lt;@{r['user_id']}&gt; — {r[key]} {label}</p>" for r in rows]) or "<p>Nothing yet.</p>"
+    top_msg = database.top_messages(guild_id)
+    top_lvl = database.top_levels(guild_id)
+    top_stf = database.top_staff(guild_id, 5)
+    recent = database.recent_ratings(guild_id, 5)
+    tickets = database.recent_tickets(guild_id)
     return _render(f"""
     <div class="card"><a href="/servers">← Back to servers</a>{saved}
-    <h2>Server {guild_id}</h2>
-    <p>Pick a section on the left to change its settings. Every setting writes to the bot's database and takes effect right away.</p>
-    <form method="post"><input type="hidden" name="next" value="/dashboard/{guild_id}"><label>Command prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save prefix</button></form></div>
-    <div class="card"><h3>🛡️ Moderation</h3>{row("Staff role", "staff_role_id")}{row("Mod log channel", "log_channel_id")}{row("Auto-role", "autorole_id")}<a href="/dashboard/{guild_id}/moderation">Change moderation →</a></div>
-    <div class="card"><h3>🎫 Tickets</h3>{row("Panel channel", "panel_channel_id")}{row("Ticket category", "ticket_category_id")}{row("Rating log", "rating_log_channel_id")}{row("Ticket log", "ticket_log_channel_id")}<a href="/dashboard/{guild_id}/tickets">Change tickets →</a></div>
-    <div class="card"><h3>📝 Applications</h3>{row("Application channel", "app_channel_id")}{row("Application role", "app_role_id")}<a href="/dashboard/{guild_id}/applications">Change applications →</a></div>
-    <div class="card"><h3>👋 Community</h3>{row("Welcome channel", "welcome_channel_id")}{row("Starboard channel", "starboard_channel_id")}<a href="/dashboard/{guild_id}/community">Change community →</a></div>
-    <div class="card"><h3>🙏 Faith</h3>{row("Faith channel", "faith_channel_id")}<p>Daily verse + prayer posts at 9:00 AM Central.</p><a href="/dashboard/{guild_id}/faith">Change faith →</a></div>""", guild_id=guild_id, active="settings")
-
+    <h2>{name}</h2>
+    <p><b>{live.get("members", "?")} members</b> • <b>{live.get("online", "?")} online now</b> • Prefix: <b>{prefix}</b></p>
+    <p>Numbers below are live from what the bot has seen in your server — messages only count from when the bot was added.</p></div>
+    <div class="card"><h3>📊 What's happening</h3>
+    <p>💬 Messages: <b>{st["messages_total"]}</b> total • <b>{st["messages_today"]}</b> today • <b>{st["messages_week"]}</b> this week</p>
+    <p>🎫 Tickets: <b>{st["open_tickets"]}</b> open • {st["tickets_total"]} total</p>
+    <p>⭐ Ratings: <b>{st["ratings_avg"]}★</b> average from {st["ratings_total"]} rating(s)</p>
+    <p>📝 Applications waiting: <b>{st["pending_apps"]}</b> • 📅 On leave: <b>{st["loa_active"]}</b> • ⚠️ Warns: <b>{st["warns_total"]}</b></p></div>
+    <div class="card"><h3>🏆 Most active members</h3>{user_list(top_msg, "n", "messages")}</div>
+    <div class="card"><h3>📈 Top levels</h3>{user_list(top_lvl, "xp", "XP")}</div>
+    <div class="card"><h3>⭐ Top rated staff</h3>{user_list(top_stf, "avg", "★ average")}</div>
+    <div class="card"><h3>🕒 Recent ratings</h3>{''.join([f"<p><b>{r['staff_id']}</b> got {r['stars']}★ from &lt;@{r['user_id']}&gt;</p>" for r in recent]) or "<p>No ratings yet.</p>"}</div>
+    <div class="card"><h3>🎫 Recent tickets</h3>{''.join([f"<p>Ticket &lt;#{t['channel_id']}&gt; — &lt;@{t['owner_id']}&gt; — {t['status']}</p>" for t in tickets]) or "<p>No tickets yet.</p>"}</div>
+    <div class="card"><h3>⚙️ Settings</h3>
+    <form method="post"><input type="hidden" name="next" value="/dashboard/{guild_id}"><label>Command prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save prefix</button></form>
+    <p>Change each section on the left: {row("Staff role", "staff_role_id")}{row("Panel channel", "panel_channel_id")}{row("Faith channel", "faith_channel_id")}</p></div>""", guild_id=guild_id, active="settings")
 @app.route("/dashboard/<int:guild_id>/ratings")
 def ratings_page(guild_id):
     if "user" not in session: return redirect("/")

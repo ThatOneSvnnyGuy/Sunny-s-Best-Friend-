@@ -304,3 +304,40 @@ def list_censored_words(guild_id):
     rows = cur.execute("SELECT word FROM censored_words WHERE guild_id=? ORDER BY word", (guild_id,)).fetchall()
     c.close()
     return [r["word"] for r in rows]
+
+def guild_stats(guild_id):
+    """Live server activity from the bot's own database."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+    c = _conn(); cur = c.cursor()
+    def one(q, args=()):
+        cur.execute(q, args)
+        return cur.fetchone()[0]
+    stats = {
+        "messages_total": one("SELECT COALESCE(SUM(count),0) FROM message_days WHERE guild_id=?", (guild_id,)),
+        "messages_today": one("SELECT COALESCE(SUM(count),0) FROM message_days WHERE guild_id=? AND day=?", (guild_id, today)),
+        "messages_week": one("SELECT COALESCE(SUM(count),0) FROM message_days WHERE guild_id=? AND day>=?", (guild_id, week_start)),
+        "open_tickets": one("SELECT COUNT(*) FROM tickets WHERE guild_id=? AND status='open'", (guild_id,)),
+        "tickets_total": one("SELECT COUNT(*) FROM tickets WHERE guild_id=?", (guild_id,)),
+        "ratings_total": one("SELECT COUNT(*) FROM ratings WHERE guild_id=?", (guild_id,)),
+        "ratings_avg": one("SELECT COALESCE(ROUND(AVG(stars),1),0) FROM ratings WHERE guild_id=?", (guild_id,)),
+        "pending_apps": one("SELECT COUNT(*) FROM applications WHERE guild_id=? AND status='pending'", (guild_id,)),
+        "loa_active": one("SELECT COUNT(*) FROM loa WHERE guild_id=? AND status='approved'", (guild_id,)),
+        "warns_total": one("SELECT COUNT(*) FROM warns WHERE guild_id=?", (guild_id,)),
+        "censored_words": one("SELECT COUNT(*) FROM censored_words WHERE guild_id=?", (guild_id,)),
+    }
+    c.close(); return stats
+
+def top_messages(guild_id, limit=5):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT user_id, SUM(count) AS n FROM message_days WHERE guild_id=? GROUP BY user_id ORDER BY n DESC LIMIT ?", (guild_id, limit)).fetchall()
+    c.close()
+    return [{"user_id": r["user_id"], "n": r["n"]} for r in rows]
+
+def recent_tickets(guild_id, limit=5):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT channel_id, owner_id, status FROM tickets WHERE guild_id=? ORDER BY channel_id DESC LIMIT ?", (guild_id, limit)).fetchall()
+    c.close()
+    return [{"channel_id": r["channel_id"], "owner_id": r["owner_id"], "status": r["status"]} for r in rows]
