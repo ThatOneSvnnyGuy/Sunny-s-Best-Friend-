@@ -300,6 +300,21 @@ def record_message(guild_id, user_id, when=None):
               (guild_id, user_id, day))
     c.commit(); c.close()
 
+def record_messages_bulk(guild_id, entries):
+    """Count many messages at once (history scan): entries are
+    (user_id, day) pairs. Aggregates per user/day and commits once,
+    so a full-history scan is fast instead of one commit per message."""
+    from collections import Counter
+    counts = Counter(entries)
+    if not counts:
+        return
+    c = _conn()
+    c.executemany(
+        "INSERT INTO message_days (guild_id,user_id,day,count) VALUES (?,?,?,?) "
+        "ON CONFLICT(guild_id,user_id,day) DO UPDATE SET count=count+excluded.count",
+        [(guild_id, uid, day, n) for (uid, day), n in counts.items()])
+    c.commit(); c.close()
+
 def get_message_stats(guild_id, user_id, now=None):
     from datetime import datetime, timezone, timedelta
     now = now or datetime.now(timezone.utc)

@@ -1,8 +1,8 @@
 """Message counts - /messages [@user]
 Shows how many messages someone sent: total, today, week, month, year.
-Counts live from when the bot is running, AND from /backfill-messages,
-which scans the server's whole channel history so the total is truly
-all-time - not just since the bot was added.
+The bot scans a server's full channel history automatically when it
+joins, so /messages is truly all-time from the start - no command
+needed. Live messages keep counting after that.
 """
 import asyncio
 import discord
@@ -11,7 +11,66 @@ from discord import app_commands
 import database
 
 class Messages(commands.Cog):
-    def __init__(self, bot): self.bot = bot
+    def __init__(self, bot):
+        self.bot = bot
+        self._scanning = set()  # guild ids with a scan already running
+
+    async def _scan_guild(self, guild, announce=True):
+        """Count every message in the server's history, once. Skips guilds
+        already scanned (flag in settings) and never runs twice at once."""
+        if guild.id in self._scanning:
+            return
+        if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "1":
+            return
+        self._scanning.add(guild.id)
+        channel = None
+        if announce:
+            channel = guild.system_channel
+            if not channel or not channel.permissions_for(guild.me).send_messages:
+                channel = next((c for c in guild.text_channels
+                                if c.permissions_for(guild.me).send_messages), None)
+            if channel:
+                try:
+                    await channel.send("🔍 I'm scanning this server's full message history so `/messages` counts everything, all-time. I'll say when it's done.")
+                except Exception:
+                    pass
+        total = 0
+        channels = 0
+        try:
+            for ch in guild.text_channels:
+                entries = []
+                try:
+                    async for msg in ch.history(limit=None):
+                        if msg.author.bot:
+                            continue
+                        entries.append((msg.author.id, msg.created_at.strftime("%Y-%m-%d")))
+                        total += 1
+                    if entries:
+                        database.record_messages_bulk(guild.id, entries)
+                    channels += 1
+                except Exception:
+                    continue
+                await asyncio.sleep(0)
+            database.set_setting(guild.id, "messages_backfilled", "1")
+        finally:
+            self._scanning.discard(guild.id)
+        if channel:
+            try:
+                await channel.send(f"✅ History scan done — counted **{total:,}** messages across **{channels}** channels. `/messages` is now truly all-time.")
+            except Exception:
+                pass
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild):
+        # New server: scan its history right away, in the background.
+        asyncio.create_task(self._scan_guild(guild))
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # Servers the bot was already in before this feature: scan any that
+        # were never backfilled, once. Guilds already flagged are skipped.
+        for guild in list(self.bot.guilds):
+            asyncio.create_task(self._scan_guild(guild))
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -41,39 +100,8 @@ class Messages(commands.Cog):
         if backfilled:
             e.set_footer(text="Week = Mon-Sun (UTC) • All-time total includes full channel history.")
         else:
-            e.set_footer(text="Week = Mon-Sun (UTC) • Run /backfill-messages to count the full history too.")
+            e.set_footer(text="Week = Mon-Sun (UTC) • History scan still running — totals fill in as it goes.")
         await i.response.send_message(embed=e)
-
-    @app_commands.command(name="backfill-messages", description="Count EVERY message in the server's history so /messages is truly all-time (Admin)")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def backfill(self, i: discord.Interaction):
-        await i.response.send_message("🔍 Scanning the server's full channel history — this can take a bit on a busy server. I'll say when it's done.", ephemeral=True)
-        guild = i.guild
-
-        async def _scan():
-            total = 0
-            channels = 0
-            for ch in guild.text_channels:
-                try:
-                    async for msg in ch.history(limit=None):
-                        if msg.author.bot:
-                            continue
-                        database.record_message(guild.id, msg.author.id, when=msg.created_at)
-                        total += 1
-                    channels += 1
-                except Exception:
-                    continue
-                await asyncio.sleep(0)
-            database.set_setting(guild.id, "messages_backfilled", "1")
-            try:
-                await i.followup.send(
-                    f"✅ Done — counted **{total:,}** messages across **{channels}** channels. "
-                    f"`/messages` is now truly all-time.",
-                    ephemeral=True)
-            except Exception:
-                pass
-
-        asyncio.create_task(_scan())
 
     @app_commands.command(name="top-messages", description="Who talks the most in this server?")
     async def top_messages(self, i: discord.Interaction):
