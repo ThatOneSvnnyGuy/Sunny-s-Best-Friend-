@@ -16,11 +16,13 @@ class Messages(commands.Cog):
         self._scanning = set()  # guild ids with a scan already running
 
     async def _scan_channel(self, guild, ch, joined):
-        """Count one channel's (or thread's) pre-join history. Returns how
-        many messages were counted. Resumes from its saved watermark."""
+        """Count one channel's (or thread's) pre-join history. Returns
+        (messages counted, completed?). Resumes from its saved watermark.
+        If fetching fails partway, completed is False so the channel is
+        retried later instead of being silently dropped."""
         oldest = await asyncio.to_thread(database.get_scan_progress, guild.id, ch.id)
         if oldest == -1:
-            return 0
+            return 0, True
         before = discord.Object(id=oldest) if oldest else None
         batch = []
         total = 0
@@ -40,9 +42,14 @@ class Messages(commands.Cog):
                 await asyncio.to_thread(database.record_messages_bulk, guild.id, batch)
                 await asyncio.to_thread(database.set_scan_progress, guild.id, ch.id, oldest)
             await asyncio.to_thread(database.set_scan_progress, guild.id, ch.id, -1)
+        except discord.Forbidden:
+            # Bot can never read this channel (e.g. private channel) —
+            # mark it done so it doesn't block the scan forever.
+            await asyncio.to_thread(database.set_scan_progress, guild.id, ch.id, -1)
+            return total, True
         except Exception:
-            pass
-        return total
+            return total, False
+        return total, True
 
     async def _scan_guild(self, guild, announce=False):
         """Count a server's pre-join message history, silently, without
@@ -77,8 +84,11 @@ class Messages(commands.Cog):
                 await asyncio.to_thread(database.clear_messages, guild.id)
             total = 0
             scanned = 0
+            all_done = True
             for ch in guild.text_channels:
-                total += await self._scan_channel(guild, ch, joined)
+                n, ok = await self._scan_channel(guild, ch, joined)
+                total += n
+                all_done = all_done and ok
                 scanned += 1
                 # Threads in this channel (active + archived)
                 threads = list(getattr(ch, "threads", []) or [])
@@ -88,11 +98,15 @@ class Messages(commands.Cog):
                 except Exception:
                     pass
                 for t in threads:
-                    total += await self._scan_channel(guild, t, joined)
+                    n, ok = await self._scan_channel(guild, t, joined)
+                    total += n
+                    all_done = all_done and ok
                     scanned += 1
                 await asyncio.sleep(0)
             for ch in guild.voice_channels:
-                total += await self._scan_channel(guild, ch, joined)
+                n, ok = await self._scan_channel(guild, ch, joined)
+                total += n
+                all_done = all_done and ok
                 scanned += 1
                 await asyncio.sleep(0)
             for ch in getattr(guild, "forum_channels", []) or []:
@@ -103,11 +117,16 @@ class Messages(commands.Cog):
                 except Exception:
                     pass
                 for t in threads:
-                    total += await self._scan_channel(guild, t, joined)
+                    n, ok = await self._scan_channel(guild, t, joined)
+                    total += n
+                    all_done = all_done and ok
                     scanned += 1
                 await asyncio.sleep(0)
-            database.set_setting(guild.id, "messages_backfilled", "2")
-            print(f"📊 History scan done for {guild.name}: {total:,} messages in {scanned} channels/threads.")
+            if all_done:
+                database.set_setting(guild.id, "messages_backfilled", "2")
+                print(f"📊 History scan done for {guild.name}: {total:,} messages in {scanned} channels/threads.")
+            else:
+                print(f"📊 History scan partial for {guild.name}: {total:,} messages so far, some channels failed and will be retried.")
         finally:
             self._scanning.discard(guild.id)
 
