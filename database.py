@@ -50,6 +50,10 @@ def init_db():
         balance INTEGER DEFAULT 0,
         PRIMARY KEY (guild_id, user_id)
     );
+    CREATE TABLE IF NOT EXISTS censored_words (
+        guild_id INTEGER, word TEXT,
+        PRIMARY KEY (guild_id, word)
+    );
     CREATE TABLE IF NOT EXISTS warns (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER, user_id INTEGER,
@@ -284,3 +288,19 @@ def get_message_stats(guild_id, user_id, now=None):
         "week_start": week_start,
     }
     c.close(); return stats
+
+def add_censored_word(guild_id, word):
+    c = _conn(); cur = c.cursor()
+    cur.execute("INSERT OR IGNORE INTO censored_words VALUES (?, ?)", (guild_id, word.lower().strip()))
+    c.commit(); c.close()
+
+def remove_censored_word(guild_id, word):
+    c = _conn(); cur = c.cursor()
+    cur.execute("DELETE FROM censored_words WHERE guild_id=? AND word=?", (guild_id, word.lower().strip()))
+    c.commit(); c.close()
+
+def list_censored_words(guild_id):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT word FROM censored_words WHERE guild_id=? ORDER BY word", (guild_id,)).fetchall()
+    c.close()
+    return [r["word"] for r in rows]

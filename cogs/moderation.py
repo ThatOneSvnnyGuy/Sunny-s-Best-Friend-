@@ -18,19 +18,57 @@ class Moderation(commands.Cog):
             try: await ch.send(text)
             except Exception: pass
 
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.author.bot or not message.guild: return
+    async def _check_message(self, message):
+        """Delete a message if it has a censored word. Returns True if deleted."""
+        if message.author.bot or not message.guild: return False
+        if message.author.guild_permissions.manage_messages: return False
+        words = [w.lower() for w in BAD_WORDS] + database.list_censored_words(message.guild.id)
         low = message.content.lower()
-        # AutoMod: bad words + invite links + spam caps
-        if any(w in low for w in BAD_WORDS):
+        hit = None
+        for w in words:
+            if re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", low):
+                hit = w; break
+        if hit:
             try:
                 await message.delete()
                 await message.channel.send(f"{message.author.mention} that word isn't allowed here.", delete_after=5)
+                await self._log(message.guild, f"🤬 Censored word `{hit}` from {message.author} (`{message.author.id}`) in {message.channel.mention}")
             except Exception: pass
-        elif "discord.gg/" in low and not message.author.guild_permissions.manage_messages:
+            return True
+        return False
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if await self._check_message(message): return
+        if not message.guild or message.author.bot: return
+        low = message.content.lower()
+        # AutoMod: invite links
+        if "discord.gg/" in low and not message.author.guild_permissions.manage_messages:
             try: await message.delete()
             except Exception: pass
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before, after):
+        # Censor edited messages too - editing can't dodge the filter
+        await self._check_message(after)
+
+    @app_commands.command(name="add-word", description="Censor a word - messages with it get deleted (Manage Messages only)")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def add_word(self, i: discord.Interaction, word: str):
+        database.add_censored_word(i.guild_id, word)
+        await i.response.send_message(f"🤬 Added `{word.lower()}` to the censored words. Messages with it will be deleted instantly.", ephemeral=True)
+    @app_commands.command(name="remove-word", description="Stop censoring a word (Manage Messages only)")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def remove_word(self, i: discord.Interaction, word: str):
+        database.remove_censored_word(i.guild_id, word)
+        await i.response.send_message(f"✅ Removed `{word.lower()}` from the censored words.", ephemeral=True)
+    @app_commands.command(name="word-list", description="Show all censored words in this server")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def word_list(self, i: discord.Interaction):
+        words = database.list_censored_words(i.guild_id)
+        base = ", ".join(f"`{w}`" for w in BAD_WORDS)
+        extra = ", ".join(f"`{w}`" for w in words) if words else "none added yet"
+        await i.response.send_message(f"🤬 Censored words:\n• Built-in: {base}\n• Added in this server: {extra}\n\nAdd one with /add-word, remove one with /remove-word.", ephemeral=True)
 
     @app_commands.command(name="kick", description="Kick a member")
     @app_commands.checks.has_permissions(kick_members=True)
