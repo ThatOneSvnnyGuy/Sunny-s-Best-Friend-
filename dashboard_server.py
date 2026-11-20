@@ -63,9 +63,18 @@ def _sidebar(guild_id=None, active="servers"):
         return f'<a href="{d}{path}"{cls}>{label}</a>'
     return ('<h2>Sunny\'s Best Friend</h2><small>Dashboard</small>'
         '<div class="group">SERVER</div><a href="/servers">← All servers</a>'
-        + a("", "🏠 Overview & settings", "settings")
+        + a("", "🏠 Overview", "settings")
+        + '<div class="group">MODERATION</div>'
+        + a("/moderation", "🛡️ Moderation", "moderation")
         + a("/ratings", "⭐ Staff ratings", "ratings")
+        + '<div class="group">SUPPORT</div>'
+        + a("/tickets", "🎫 Tickets", "tickets")
         + a("/loa", "📅 Leave (LOA)", "loa")
+        + a("/applications", "📝 Applications", "applications")
+        + '<div class="group">COMMUNITY</div>'
+        + a("/community", "👋 Welcome & starboard", "community")
+        + '<div class="group">FAITH & FUN</div>'
+        + a("/faith", "🙏 Daily verse & prayer", "faith")
         + '<div class="group">IN DISCORD</div>'
         '<p style="color:#b5bac1;font-size:13px">Tickets, LOA, strikes and applications are used in Discord with slash commands — /setup-tickets, /loa-request, /apply, /strike, /close.</p>')
 
@@ -137,25 +146,30 @@ def dashboard(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     if request.method == "POST":
-        for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id", "autorole_id", "log_channel_id"]:
+        for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id", "autorole_id", "log_channel_id", "panel_channel_id", "ticket_log_channel_id", "app_channel_id", "app_role_id"]:
             v = request.form.get(key)
             if v: database.set_setting(guild_id, key, int(v))
         p = (request.form.get("prefix") or "").strip()
         if p and len(p) <= 3 and not any(c.isspace() for c in p):
             database.set_setting(guild_id, "prefix", p)
-        return redirect(f"/dashboard/{guild_id}?saved=1")
+        nxt = request.form.get("next") or f"/dashboard/{guild_id}"
+        return redirect(f"{nxt}?saved=1")
     s = database.get_settings(guild_id)
     saved = "<p>✅ Saved.</p>" if request.args.get("saved") else ""
-    fields = "".join([f'<label>{k}<input name="{k}" value="{s.get(k, "")}" placeholder="Discord ID number"></label>' for k in
-        ["staff_role_id", "ticket_category_id", "rating_log_channel_id", "welcome_channel_id", "faith_channel_id", "starboard_channel_id", "autorole_id", "log_channel_id"]])
     prefix = s.get("prefix") or "!"
+    def row(label, key):
+        v = s.get(key) or "not set"
+        return f"<p><b>{label}:</b> {v}</p>"
     return _render(f"""
     <div class="card"><a href="/servers">← Back to servers</a>{saved}
-    <h2>Server {guild_id}</h2><p>Enter Discord IDs (right-click a channel/role > Copy ID, with Developer Mode on). These write to the bot's database.</p>
-    <form method="post">{fields}<label>prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save settings</button></form></div>
-    <div class="card"><h3>How to use in Discord</h3>
-    <p>/setup-tickets staff_role:@Staff &nbsp;•&nbsp; /set-faith-channel &nbsp;•&nbsp; /set-welcome &nbsp;•&nbsp; /set-starboard</p>
-    <p>Daily verse + prayer posts at 9:00 AM Central to the faith channel.</p></div>""", guild_id=guild_id, active="settings")
+    <h2>Server {guild_id}</h2>
+    <p>Pick a section on the left to change its settings. Every setting writes to the bot's database and takes effect right away.</p>
+    <form method="post"><input type="hidden" name="next" value="/dashboard/{guild_id}"><label>Command prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save prefix</button></form></div>
+    <div class="card"><h3>🛡️ Moderation</h3>{row("Staff role", "staff_role_id")}{row("Mod log channel", "log_channel_id")}{row("Auto-role", "autorole_id")}<a href="/dashboard/{guild_id}/moderation">Change moderation →</a></div>
+    <div class="card"><h3>🎫 Tickets</h3>{row("Panel channel", "panel_channel_id")}{row("Ticket category", "ticket_category_id")}{row("Rating log", "rating_log_channel_id")}{row("Ticket log", "ticket_log_channel_id")}<a href="/dashboard/{guild_id}/tickets">Change tickets →</a></div>
+    <div class="card"><h3>📝 Applications</h3>{row("Application channel", "app_channel_id")}{row("Application role", "app_role_id")}<a href="/dashboard/{guild_id}/applications">Change applications →</a></div>
+    <div class="card"><h3>👋 Community</h3>{row("Welcome channel", "welcome_channel_id")}{row("Starboard channel", "starboard_channel_id")}<a href="/dashboard/{guild_id}/community">Change community →</a></div>
+    <div class="card"><h3>🙏 Faith</h3>{row("Faith channel", "faith_channel_id")}<p>Daily verse + prayer posts at 9:00 AM Central.</p><a href="/dashboard/{guild_id}/faith">Change faith →</a></div>""", guild_id=guild_id, active="settings")
 
 @app.route("/dashboard/<int:guild_id>/ratings")
 def ratings_page(guild_id):
@@ -167,6 +181,57 @@ def ratings_page(guild_id):
     rows = "".join([f'<div class="card"><b>{r["staff_id"]}</b> — ⭐ {r["avg"]} average, {r["n"]} rating(s)</div>' for r in top]) or "<p>No ratings yet — ratings appear here when a ticket closes and the owner rates support 1-5 stars.</p>"
     body = "<h2>⭐ Staff ratings</h2>" + rows + "<p>Check in Discord: /ratings, /leaderboard, /recent-ratings</p>"
     return _render(body, guild_id=guild_id, active="ratings")
+
+
+def _section_form(guild_id, active, title, blurb, fields, commands):
+    if "user" not in session: return redirect("/")
+    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+        return "You don't manage that server, or the bot isn't in it.", 403
+    database.init_db()
+    s = database.get_settings(guild_id)
+    saved = "<p>✅ Saved.</p>" if request.args.get("saved") else ""
+    inputs = "".join([f'<label>{label} <small>({key})</small><input name="{key}" value="{s.get(key, "")}" placeholder="Discord ID number"></label>' for key, label in fields])
+    cmds = "<p><b>Used in Discord:</b> " + " • ".join(commands) + "</p>" if commands else ""
+    body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{saved}<h2>{title}</h2><p>{blurb}</p>
+    <p>Enter Discord IDs (right-click a channel/role &gt; Copy ID, with Developer Mode on).</p>
+    <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/{active}">{inputs}<button>Save settings</button></form></div>
+    <div class="card">{cmds}</div>"""
+    return _render(body, guild_id=guild_id, active=active)
+
+@app.route("/dashboard/<int:guild_id>/moderation")
+def section_moderation(guild_id):
+    return _section_form(guild_id, "moderation", "🛡️ Moderation",
+        "Who can moderate, where mod actions get logged, and what new members get.",
+        [("staff_role_id", "Staff role"), ("log_channel_id", "Mod log channel"), ("autorole_id", "Auto-role for new members")],
+        ["/kick", "/ban", "/banlist", "/timeout", "/untimeout", "/warn", "/warns", "/strike", "/strikes", "/purge", "/slowmode", "/lock", "/unlock", "/add-word", "/remove-word", "/word-list", "/set-autorole", "/set-log-channel"])
+
+@app.route("/dashboard/<int:guild_id>/tickets")
+def section_tickets(guild_id):
+    return _section_form(guild_id, "tickets", "🎫 Tickets",
+        "Exactly where the ticket panel goes, where tickets live, and where ratings and new-ticket alerts go.",
+        [("panel_channel_id", "Panel channel"), ("ticket_category_id", "Ticket category"), ("rating_log_channel_id", "Rating log channel"), ("ticket_log_channel_id", "Ticket log channel")],
+        ["/setup-tickets", "/close", "/claim", "/ratings", "/leaderboard", "/recent-ratings"])
+
+@app.route("/dashboard/<int:guild_id>/applications")
+def section_applications(guild_id):
+    return _section_form(guild_id, "applications", "📝 Applications",
+        "Where applications are sent and which role approved applicants get.",
+        [("app_channel_id", "Application channel"), ("app_role_id", "Role given on approval")],
+        ["/setup-applications", "/apply", "/applications"])
+
+@app.route("/dashboard/<int:guild_id>/community")
+def section_community(guild_id):
+    return _section_form(guild_id, "community", "👋 Welcome & starboard",
+        "Where welcome messages and starred messages go.",
+        [("welcome_channel_id", "Welcome channel"), ("starboard_channel_id", "Starboard channel")],
+        ["/set-welcome", "/set-starboard", "/reaction-roles"])
+
+@app.route("/dashboard/<int:guild_id>/faith")
+def section_faith(guild_id):
+    return _section_form(guild_id, "faith", "🙏 Daily verse & prayer",
+        "Where the daily Bible verse and prayer post at 9:00 AM Central.",
+        [("faith_channel_id", "Faith channel")],
+        ["/verse", "/dailyverse", "/prayer", "/pray", "/set-faith-channel"])
 
 @app.route("/ping")
 def ping():
