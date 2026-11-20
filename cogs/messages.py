@@ -70,7 +70,7 @@ class Messages(commands.Cog):
         # flagged "1" (text channels only) gets scanned again — the
         # per-channel watermarks skip what's already done, so only the
         # new coverage is added, nothing is re-counted.
-        if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "2":
+        if (database.get_settings(guild.id).get("messages_backfilled") or "0") == "3":
             return
         self._scanning.add(guild.id)
         try:
@@ -123,7 +123,7 @@ class Messages(commands.Cog):
                     scanned += 1
                 await asyncio.sleep(0)
             if all_done:
-                database.set_setting(guild.id, "messages_backfilled", "2")
+                database.set_setting(guild.id, "messages_backfilled", "3")
                 print(f"📊 History scan done for {guild.name}: {total:,} messages in {scanned} channels/threads.")
             else:
                 print(f"📊 History scan partial for {guild.name}: {total:,} messages so far, some channels failed and will be retried.")
