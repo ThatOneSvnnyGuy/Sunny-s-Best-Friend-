@@ -4,13 +4,17 @@ Flow: /setup-tickets -> user clicks Create Ticket -> staff Claim -> Close
 -> rating saves to SQLite, posts to rating-log channel, then channel deletes.
 One rating per ticket. Staff is whoever claimed (or closer if unclaimed).
 """
-import asyncio, discord
+import asyncio, discord, io, time
 from discord.ext import commands
 from discord import app_commands
 import database
 
 # pending star choice while feedback modal is open: (channel_id, user_id) -> stars
 _pending = {}
+
+# Tickets already being finished (transcript + delete) — stops the rated,
+# skipped and 5-minute-timeout paths from all trying to close one ticket.
+_closing = set()
 
 # Every live rating view for a ticket (channel message + owner's DM), so one
 # rating can instantly shut ALL of them down - no second chance to rate.
@@ -40,10 +44,76 @@ async def _close_all_rating_views(channel_id, stars=None):
 def stars_text(n: int) -> str:
     return "⭐" * n + "☆" * (5 - n)
 
+async def _build_transcript(channel, header_lines):
+    """The ticket's actual transcript: every message in the channel,
+    oldest first, as a .txt file. Attachments are listed by URL."""
+    lines = list(header_lines) + ["", "— Messages —"]
+    count = 0
+    try:
+        async for m in channel.history(limit=1000, oldest_first=True):
+            count += 1
+            ts = m.created_at.strftime("%Y-%m-%d %H:%M")
+            text = (m.content or "").strip()
+            if not text:
+                if m.embeds:
+                    text = f"[embed: {m.embeds[0].title or 'untitled'}]"
+                elif m.stickers:
+                    text = f"[sticker: {m.stickers[0].name}]"
+                else:
+                    text = "[no text]"
+            lines.append(f"[{ts}] {m.author} ({m.author.id}): {text}")
+            for a in m.attachments:
+                lines.append(f"    [attachment: {a.url}]")
+    except Exception as e:
+        lines.append(f"[couldn't read the rest of the history: {e}]")
+    if count >= 1000:
+        lines.append("[showing the first 1000 messages]")
+    data = "\n".join(lines).encode("utf-8", "replace")
+    return discord.File(io.BytesIO(data), filename=f"transcript-{channel.name}.txt")
+
+async def _finish_ticket(guild, channel, *, owner_id, staff_id, label, reason, rating_text):
+    """Finish a closed ticket, once: send its transcript to the ticket-log
+    channel, then delete the channel. Never fails the close — if the
+    transcript can't be sent, the channel still gets deleted."""
+    if channel is None or channel.id in _closing:
+        return
+    _closing.add(channel.id)
+    try:
+        s = database.get_settings(guild.id) if guild else {}
+        log_id = s.get("ticket_log_channel_id")
+        header = [
+            f"Ticket transcript — #{channel.name}",
+            f"Type: {label or 'Ticket'}",
+            f"Opened by: <@{owner_id}>",
+            f"Staff: <@{staff_id}>" if staff_id else "Staff: no one claimed",
+            f"Close reason: {reason}" if reason else "Close reason: —",
+            f"Rating: {rating_text}",
+            f"Closed: {time.strftime('%Y-%m-%d %H:%M')} UTC",
+        ]
+        if log_id and guild:
+            log_ch = guild.get_channel(log_id)
+            if log_ch:
+                try:
+                    f = await _build_transcript(channel, header)
+                    await log_ch.send(
+                        f"📄 Transcript for #{channel.name} ({label or 'ticket'}) — opened by <@{owner_id}>, "
+                        f"staff <@{staff_id}> — {rating_text}" if staff_id else
+                        f"📄 Transcript for #{channel.name} ({label or 'ticket'}) — opened by <@{owner_id}> — {rating_text}",
+                        file=f)
+                except Exception:
+                    pass
+    finally:
+        try:
+            await channel.delete(reason="Ticket closed")
+        except Exception:
+            pass
+        _closing.discard(channel.id)
+
 class FeedbackModal(discord.ui.Modal, title="Rate your support"):
     feedback = discord.ui.TextInput(label="Any feedback? (optional)", style=discord.TextStyle.paragraph, required=False, max_length=500, placeholder="What went well / what could be better?")
-    def __init__(self, stars: int, channel_id: int, staff_id):
+    def __init__(self, stars: int, channel_id: int, staff_id, guild=None, channel=None, label=None, reason=None):
         super().__init__(); self.stars = stars; self.channel_id = channel_id; self.staff_id = staff_id
+        self.guild = guild; self.channel = channel; self.label = label; self.reason = reason
     async def on_submit(self, interaction: discord.Interaction):
         ticket = database.get_ticket(self.channel_id)
         if not ticket:
@@ -74,25 +144,33 @@ class FeedbackModal(discord.ui.Modal, title="Rate your support"):
                 if self.staff_id: e.add_field(name="Staff average now", value=f"{avg} ⭐ from {n} rating(s)", inline=True)
                 if str(self.feedback): e.add_field(name="Feedback", value=str(self.feedback), inline=False)
                 await ch.send(embed=e)
-        # Delete the ticket channel shortly after rating
-        await asyncio.sleep(10)
-        ch = guild.get_channel(self.channel_id)
-        if ch:
-            try: await ch.delete(reason="Ticket closed + rated")
-            except Exception: pass
+        # Transcript + delete. The rating is just the staff member's overall
+        # rating — their average and count — nothing else counts as a
+        # "completion" for them.
+        rating_text = f"{self.stars}/5 {stars_text(self.stars)}"
+        if str(self.feedback):
+            rating_text += f" — “{str(self.feedback)}”"
+        channel = self.channel or guild.get_channel(self.channel_id)
+        await _finish_ticket(guild, channel, owner_id=interaction.user.id, staff_id=self.staff_id,
+                             label=self.label, reason=self.reason, rating_text=rating_text)
 
 class RatingView(discord.ui.View):
-    def __init__(self, channel_id: int, owner_id: int, staff_id):
+    def __init__(self, channel_id: int, owner_id: int, staff_id, guild=None, channel=None, label=None, reason=None):
         super().__init__(timeout=300)
         self.channel_id = channel_id; self.owner_id = owner_id; self.staff_id = staff_id
         self.message = None
+        # The guild/channel are kept on the view so Skip can always finish
+        # the ticket, even from the DM where interaction.guild is None.
+        self.guild = guild; self.channel = channel; self.label = label; self.reason = reason
         _register_view(channel_id, self)
     async def _pick(self, interaction: discord.Interaction, stars: int):
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message("Only the ticket owner can rate this ticket.", ephemeral=True); return
         if database.has_rated(self.channel_id, self.owner_id):
             await interaction.response.send_message("You already rated this ticket.", ephemeral=True); return
-        await interaction.response.send_modal(FeedbackModal(stars, self.channel_id, self.staff_id))
+        await interaction.response.send_modal(FeedbackModal(stars, self.channel_id, self.staff_id,
+                                                            guild=self.guild, channel=self.channel,
+                                                            label=self.label, reason=self.reason))
     @discord.ui.button(label="⭐ 1", style=discord.ButtonStyle.secondary)
     async def s1(self, i, b): await self._pick(i, 1)
     @discord.ui.button(label="⭐⭐ 2", style=discord.ButtonStyle.secondary)
@@ -107,18 +185,24 @@ class RatingView(discord.ui.View):
     async def skip(self, interaction, button):
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message("Only the ticket owner can skip.", ephemeral=True); return
+        # Answer first — nothing after this may stop the ticket closing.
+        try:
+            await interaction.response.send_message("No rating given. Closing ticket...", ephemeral=True)
+        except Exception:
+            pass
         await _close_all_rating_views(self.channel_id, None)
-        await interaction.response.send_message("No rating given. Closing ticket...", ephemeral=True)
-        await asyncio.sleep(5)
-        # In a DM, interaction.guild is None - resolve the guild from the ticket row instead
-        ticket = database.get_ticket(self.channel_id)
-        guild = interaction.guild or (interaction.client.get_guild(ticket["guild_id"]) if ticket else None)
+        # Skipping records NOTHING for the staff member — no rating, no
+        # count, no "completion". The rating is only their overall average
+        # when someone actually rates.
+        guild = self.guild or interaction.guild
+        channel = self.channel or (guild.get_channel(self.channel_id) if guild else None)
         if guild is None:
-            return
-        ch = guild.get_channel(self.channel_id)
-        if ch:
-            try: await ch.delete(reason="Ticket closed, rating skipped")
-            except Exception: pass
+            ticket = database.get_ticket(self.channel_id)
+            guild = interaction.client.get_guild(ticket["guild_id"]) if ticket else None
+            channel = guild.get_channel(self.channel_id) if guild else None
+        await _finish_ticket(guild, channel, owner_id=self.owner_id, staff_id=self.staff_id,
+                             label=self.label, reason=self.reason,
+                             rating_text="Skipped — no rating given")
     async def on_timeout(self):
         # Rating window expired - shut every rating view for this ticket down
         _rating_views.pop(self.channel_id, None)
@@ -222,6 +306,10 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
         return
     owner_id = t["owner_id"]; staff_id = t.get("staff_id") or closer.id
     database.close_ticket(channel.id)
+    label = None
+    if t.get("menu_id"):
+        menu = database.get_ticket_menu(t["menu_id"], guild.id)
+        label = menu["title"] if menu else None
     owner = guild.get_member(owner_id)
     # Lock channel for owner (staff can still read)
     try:
@@ -235,13 +323,13 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
     e.add_field(name="Opened by", value=f"<@{owner_id}>", inline=True)
     if reason:
         e.add_field(name="Close reason", value=reason, inline=False)
-    view = RatingView(channel.id, owner_id, staff_id)
+    view = RatingView(channel.id, owner_id, staff_id, guild=guild, channel=channel, label=label, reason=reason)
     msg = await channel.send(embed=e, view=view)
     view.message = msg
     # DM the owner too, in case they miss it
     if owner:
         try:
-            dm_view = RatingView(channel.id, owner_id, staff_id)
+            dm_view = RatingView(channel.id, owner_id, staff_id, guild=guild, channel=channel, label=label, reason=reason)
             dm_msg = await owner.send(embed=e, view=dm_view)
             dm_view.message = dm_msg
         except Exception:
@@ -250,8 +338,9 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
     await asyncio.sleep(300)
     ch = guild.get_channel(channel.id)
     if ch and not database.has_rated(channel.id, owner_id):
-        try: await ch.delete(reason="Ticket closed, rating window expired")
-        except Exception: pass
+        await _finish_ticket(guild, ch, owner_id=owner_id, staff_id=staff_id,
+                             label=label, reason=reason,
+                             rating_text="No rating — window expired")
 
 TOPICS = [(v, (f"{e} {l}" if e else l), d, e) for v, l, d, e, _p in database.BUILTIN_TICKET_TOPICS]
 
@@ -261,6 +350,19 @@ def _slug(text: str) -> str:
     while "--" in out:
         out = out.replace("--", "-")
     return out.strip("-") or "ticket"
+
+def _unique_channel_name(guild, base):
+    """A new ticket of the same type always gets its own channel, even if
+    the last one is still around (e.g. in its rating window):
+    partnership-username, partnership-username-2, ..."""
+    base = base[:90]
+    names = {c.name for c in (getattr(guild, "channels", None) or [])}
+    if base not in names:
+        return base
+    n = 2
+    while f"{base}-{n}" in names:
+        n += 1
+    return f"{base}-{n}"
 
 # ---------------------------------------------------------------------------
 # NEW PANEL MODEL (2026-11-20): one dropdown per panel, and its options ARE
@@ -340,8 +442,8 @@ async def create_ticket_for_menu(interaction: discord.Interaction, menu, answers
         overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
     prefix = _slug(menu.get("ticket_prefix") or "")
     label = menu["title"]
-    name = f"{prefix}-{_slug(interaction.user.name)}" if prefix else f"ticket-{_slug(label)}-{_slug(interaction.user.name)}"
-    channel = await guild.create_text_channel(name[:100], category=category, overwrites=overwrites,
+    base = f"{prefix}-{_slug(interaction.user.name)}" if prefix else f"ticket-{_slug(label)}-{_slug(interaction.user.name)}"
+    channel = await guild.create_text_channel(_unique_channel_name(guild, base), category=category, overwrites=overwrites,
         topic=f"Ticket opened by {interaction.user} • {label}"[:1024], reason=f"Ticket created: {label}")
     database.create_ticket(channel.id, guild.id, interaction.user.id, menu_id=menu["id"])
     mentions = " ".join(r.mention for r in roles)
@@ -539,8 +641,8 @@ async def create_ticket_for(interaction: discord.Interaction, topic: str, label:
         overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
     prefix = _slug((tpl or {}).get("ticket_prefix") or "")
     slug = topic.replace("_", "-")
-    name = f"{prefix}-{_slug(interaction.user.name)}" if prefix else f"ticket-{_slug(slug)}-{_slug(interaction.user.name)}"
-    channel = await guild.create_text_channel(name[:100], category=category, overwrites=overwrites,
+    base = f"{prefix}-{_slug(interaction.user.name)}" if prefix else f"ticket-{_slug(slug)}-{_slug(interaction.user.name)}"
+    channel = await guild.create_text_channel(_unique_channel_name(guild, base), category=category, overwrites=overwrites,
         topic=f"Ticket opened by {interaction.user} • {label}"[:1024], reason=f"Ticket created: {label}")
     database.create_ticket(channel.id, guild.id, interaction.user.id)
     log_id = s.get("ticket_log_channel_id")
