@@ -351,21 +351,75 @@ def section_tickets(guild_id):
         elif action == "delete_menu":
             database.delete_ticket_menu(int(request.form.get("menu_id")), guild_id)
             msg = "<p>✅ Menu deleted (its templates moved back to the first menu).</p>"
+        elif action == "edit_menu":
+            title = (request.form.get("title") or "").strip()
+            if title:
+                database.update_ticket_menu(int(request.form.get("menu_id")), guild_id, title, (request.form.get("placeholder") or "").strip())
+                msg = f"<p>✅ Menu updated to '<b>{title}</b>'.</p>"
+            else:
+                msg = "<p>⚠️ A menu needs a title.</p>"
+        elif action == "edit_template":
+            name = (request.form.get("name") or "").strip()
+            if name:
+                def _id(v):
+                    try: return int(v)
+                    except Exception: return None
+                database.update_ticket_template(int(request.form.get("template_id")), guild_id, name,
+                    request.form.get("description") or "",
+                    _id(request.form.get("menu_id")),
+                    (request.form.get("emoji") or "").strip() or None,
+                    (request.form.get("ticket_prefix") or "").strip() or None,
+                    _id(request.form.get("staff_role_id")),
+                    _id(request.form.get("panel_channel_id")),
+                    _id(request.form.get("category_id")))
+                msg = f"<p>✅ Option '<b>{name}</b>' updated.</p>"
+            else:
+                msg = "<p>⚠️ An option needs a name.</p>"
         elif action == "post_panel":
             msg = _post_ticket_panel(guild_id, s)
     templates = database.list_ticket_templates(guild_id)
     menus = database.ensure_ticket_menus(guild_id)
     _panel_desc_default = "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards."
     menu_names = {m["id"]: m["title"] for m in menus}
-    menu_opts = "".join([f'<option value="{m["id"]}">{m["title"]}</option>' for m in menus])
-    mrows = "".join([f"""<div class="card"><h3>⬇️ {m['title']}</h3>
-        <p class="muted">Placeholder: {m.get('placeholder') or m['title']}</p>
-        <p>{sum(1 for t in templates if (t.get('menu_id') or menus[0]['id']) == m['id'])} option(s) in this menu</p>
-        <form method="post"><input type="hidden" name="action" value="delete_menu"><input type="hidden" name="menu_id" value="{m['id']}"><button class="danger">Delete menu</button></form></div>""" for m in menus])
-    rows = "".join([f"""<div class="card"><h3>🎫 {t.get('emoji') or ''} {t['name']}</h3>
-        <p>{t.get('description') or 'No description.'}</p>
-        <p>Menu: {menu_names.get(t.get('menu_id') or menus[0]['id'], '—')} • Staff role: {t.get('staff_role_id') or 'server default'} • Panel channel: {t.get('panel_channel_id') or 'server default'} • Category: {t.get('category_id') or 'server default'} • Ticket name: {t.get('ticket_prefix') or 'ticket-...'}</p>
-        <form method="post"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button>Delete template</button></form></div>""" for t in templates]) or "<p>No templates yet — members see the built-in topics (General Help, Report a Player, Bug Report, Billing, Appeal, Something Else) until you add one.</p>"
+    def _menu_opts(selected=None):
+        return "".join([f'<option value="{m["id"]}"{" selected" if m["id"] == selected else ""}>{m["title"]}</option>' for m in menus])
+    edit_menu_id = request.args.get("edit_menu")
+    edit_tpl_id = request.args.get("edit_template")
+    mrows = ""
+    for m in menus:
+        if edit_menu_id and str(m["id"]) == edit_menu_id:
+            mrows += f"""<div class="card"><h3>✏️ Edit menu</h3>
+            <form method="post"><input type="hidden" name="action" value="edit_menu"><input type="hidden" name="menu_id" value="{m['id']}">
+            <label>Menu title<input name="title" value="{m['title']}" maxlength="100"></label>
+            <label>Placeholder text inside the dropdown<input name="placeholder" value="{m.get('placeholder') or ''}" maxlength="150"></label>
+            <button>Save changes</button> <a href="/dashboard/{guild_id}/tickets"><button type="button">Cancel</button></a></form></div>"""
+        else:
+            mrows += f"""<div class="card"><h3>⬇️ {m['title']}</h3>
+            <p class="muted">Placeholder: {m.get('placeholder') or m['title']}</p>
+            <p>{sum(1 for t in templates if (t.get('menu_id') or menus[0]['id']) == m['id'])} option(s) in this menu</p>
+            <a href="/dashboard/{guild_id}/tickets?edit_menu={m['id']}"><button type="button">✏️ Edit</button></a>
+            <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_menu"><input type="hidden" name="menu_id" value="{m['id']}"><button class="danger">Delete menu</button></form></div>"""
+    rows = ""
+    for t in templates:
+        if edit_tpl_id and str(t["id"]) == edit_tpl_id:
+            rows += f"""<div class="card"><h3>✏️ Edit option</h3>
+            <form method="post"><input type="hidden" name="action" value="edit_template"><input type="hidden" name="template_id" value="{t['id']}">
+            <label>Option name<input name="name" value="{t['name']}" maxlength="100"></label>
+            <label>Menu<select name="menu_id">{_menu_opts(t.get('menu_id') or menus[0]['id'])}</select></label>
+            <label>Description<input name="description" value="{t.get('description') or ''}" maxlength="100"></label>
+            <label>Emoji<input name="emoji" value="{t.get('emoji') or ''}" maxlength="10"></label>
+            <label>Ticket channel name<input name="ticket_prefix" value="{t.get('ticket_prefix') or ''}" maxlength="30"></label>
+            <label>Staff role ID<input name="staff_role_id" value="{t.get('staff_role_id') or ''}" placeholder="Discord ID number"></label>
+            <label>Panel channel ID<input name="panel_channel_id" value="{t.get('panel_channel_id') or ''}" placeholder="Discord ID number"></label>
+            <label>Category ID<input name="category_id" value="{t.get('category_id') or ''}" placeholder="Discord ID number"></label>
+            <button>Save changes</button> <a href="/dashboard/{guild_id}/tickets"><button type="button">Cancel</button></a></form></div>"""
+        else:
+            rows += f"""<div class="card"><h3>🎫 {t.get('emoji') or ''} {t['name']}</h3>
+            <p>{t.get('description') or 'No description.'}</p>
+            <p>Menu: {menu_names.get(t.get('menu_id') or menus[0]['id'], '—')} • Staff role: {t.get('staff_role_id') or 'server default'} • Panel channel: {t.get('panel_channel_id') or 'server default'} • Category: {t.get('category_id') or 'server default'} • Ticket name: {t.get('ticket_prefix') or 'ticket-...'}</p>
+            <a href="/dashboard/{guild_id}/tickets?edit_template={t['id']}"><button type="button">✏️ Edit</button></a>
+            <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button>Delete template</button></form></div>"""
+    rows = rows or "<p>No templates yet — members see the built-in topics (General Help, Report a Player, Bug Report, Billing, Appeal, Something Else) until you add one.</p>"
     body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>🎫 Tickets</h2>
     <p>Ticket King style: your panel can have <b>more than one dropdown</b> — make a menu for each group (like "Support" and "Applications"), then add options to each menu. Every option can have its own emoji, staff role, category and ticket channel name. When a ticket closes, the owner rates it 1-5 ⭐.</p>
     <form method="post"><input type="hidden" name="action" value="post_panel"><button>📣 Post / update the ticket panel in Discord</button></form>
@@ -386,7 +440,7 @@ def section_tickets(guild_id):
     <div class="card"><h3>＋ New option</h3>
     <form method="post"><input type="hidden" name="action" value="add_template">
     <label>Option name (shows in the dropdown)<input name="name" placeholder="e.g. Report a Player" maxlength="100"></label>
-    <label>Menu<select name="menu_id">{menu_opts}</select></label>
+    <label>Menu<select name="menu_id">{_menu_opts()}</select></label>
     <label>Description<input name="description" placeholder="e.g. Report someone breaking the rules" maxlength="100"></label>
     <label>Emoji (one emoji, e.g. 🚨)<input name="emoji" placeholder="🚨" maxlength="10"></label>
     <label>Ticket channel name (optional — e.g. report, so channels are named report-username)<input name="ticket_prefix" placeholder="report" maxlength="30"></label>
@@ -507,6 +561,38 @@ def section_applications(guild_id):
                 msg = f"<p>✅ Template '<b>{name}</b>' created with {len(qs[:5])} question(s).</p>"
             else:
                 msg = "<p>⚠️ Give the template a name first.</p>"
+        elif action == "edit_template":
+            name = (request.form.get("name") or "").strip()
+            if name:
+                def _id(v):
+                    try: return int(v)
+                    except Exception: return None
+                qs = []
+                for line in (request.form.get("questions") or "").splitlines():
+                    line = line.strip()
+                    if not line: continue
+                    parts = [p.strip() for p in line.split("|")]
+                    qs.append({"label": parts[0][:45],
+                               "style": "paragraph" if len(parts) > 1 and parts[1].lower().startswith("long") else "short",
+                               "required": not (len(parts) > 2 and parts[2].lower().startswith("opt")),
+                               "max_length": 500 if len(parts) > 1 and parts[1].lower().startswith("long") else 200})
+                import json as _json
+                def _color(v):
+                    try: return int(v, 0)
+                    except Exception: return None
+                def _days(v):
+                    try: return int(v)
+                    except Exception: return None
+                database.update_application_template(int(request.form.get("template_id")), guild_id, name,
+                    request.form.get("description") or "",
+                    _id(request.form.get("role_id")),
+                    _id(request.form.get("review_channel_id")),
+                    _json.dumps(qs[:5]),
+                    _color(request.form.get("color")),
+                    _days(request.form.get("cooldown_days")))
+                msg = f"<p>✅ Template '<b>{name}</b>' updated.</p>"
+            else:
+                msg = "<p>⚠️ Give the template a name first.</p>"
         elif action == "delete_template":
             database.delete_application_template(int(request.form.get("template_id")), guild_id)
             msg = "<p>✅ Template deleted.</p>"
@@ -535,14 +621,29 @@ def section_applications(guild_id):
                 msg = "<p>⚠️ That application was already decided.</p>"
     templates = database.list_application_templates(guild_id)
     import json as _json
+    edit_app_id = request.args.get("edit_template")
     trows = ""
     for t in templates:
         try: qs = _json.loads(t.get("questions") or "[]")
         except Exception: qs = []
         qlist = "".join([f"<div class='rowline'><span>{q.get('label')}</span><span class='muted'>{'long answer' if q.get('style') == 'paragraph' else 'short answer'}{' • optional' if not q.get('required') else ''}</span></div>" for q in qs]) or "<p class='muted'>Built-in staff questions.</p>"
-        trows += f"""<div class="card"><h3>📝 {t['name']}</h3><p class="muted">{t.get('description') or ''}</p>
-        <p>Role on approval: {t.get('role_id') or 'server default'} • Review channel: {t.get('review_channel_id') or 'server default'} • Cooldown: {t.get('cooldown_days') or 'none'} day(s) • Color: {hex(t.get('color')) if t.get('color') else 'default'}</p>{qlist}
-        <form method="post"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button class="danger">Delete template</button></form></div>"""
+        if edit_app_id and str(t["id"]) == edit_app_id:
+            qlines = "\n".join([f"{q.get('label')} | {'long' if q.get('style') == 'paragraph' else 'short'} | {'required' if q.get('required') else 'optional'}" for q in qs])
+            trows += f"""<div class="card"><h3>✏️ Edit template</h3>
+            <form method="post"><input type="hidden" name="action" value="edit_template"><input type="hidden" name="template_id" value="{t['id']}">
+            <label>Template name<input name="name" value="{t['name']}" maxlength="100"></label>
+            <label>Description<input name="description" value="{t.get('description') or ''}" maxlength="200"></label>
+            <label>Questions — one per line: <small>Question | short or long | required or optional</small><textarea name="questions" rows="4">{qlines}</textarea></label>
+            <label>Role ID given on approval<input name="role_id" value="{t.get('role_id') or ''}" placeholder="Discord ID number"></label>
+            <label>Review channel ID<input name="review_channel_id" value="{t.get('review_channel_id') or ''}" placeholder="Discord ID number"></label>
+            <label>Embed color (hex, e.g. 0x5865F2)<input name="color" value="{hex(t.get('color')) if t.get('color') else ''}" placeholder="0x5865F2"></label>
+            <label>Cooldown in days<input name="cooldown_days" value="{t.get('cooldown_days') or ''}" placeholder="e.g. 7"></label>
+            <button>Save changes</button> <a href="/dashboard/{guild_id}/applications"><button type="button">Cancel</button></a></form></div>"""
+        else:
+            trows += f"""<div class="card"><h3>📝 {t['name']}</h3><p class="muted">{t.get('description') or ''}</p>
+            <p>Role on approval: {t.get('role_id') or 'server default'} • Review channel: {t.get('review_channel_id') or 'server default'} • Cooldown: {t.get('cooldown_days') or 'none'} day(s) • Color: {hex(t.get('color')) if t.get('color') else 'default'}</p>{qlist}
+            <a href="/dashboard/{guild_id}/applications?edit_template={t['id']}"><button type="button">✏️ Edit</button></a>
+            <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button class="danger">Delete template</button></form></div>"""
     pending = database.list_applications(guild_id, "pending")
     prows = ""
     for a in pending:

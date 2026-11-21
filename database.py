@@ -464,6 +464,20 @@ def list_ticket_menus(guild_id):
     rows = cur.execute("SELECT * FROM ticket_menus WHERE guild_id=? ORDER BY position, id", (guild_id,)).fetchall()
     c.close(); return [dict(r) for r in rows]
 
+def update_ticket_menu(menu_id, guild_id, title, placeholder=""):
+    c = _conn(); cur = c.cursor()
+    cur.execute("UPDATE ticket_menus SET title=?, placeholder=? WHERE id=? AND guild_id=?",
+                (title, placeholder, menu_id, guild_id))
+    c.commit(); c.close()
+
+def update_ticket_template(template_id, guild_id, name, description="", menu_id=None, emoji=None, ticket_prefix=None, staff_role_id=None, panel_channel_id=None, category_id=None):
+    c = _conn(); cur = c.cursor()
+    cur.execute("""UPDATE ticket_templates SET name=?, description=?, menu_id=?, emoji=?,
+                   ticket_prefix=?, staff_role_id=?, panel_channel_id=?, category_id=?
+                   WHERE id=? AND guild_id=?""",
+                (name, description, menu_id, emoji, ticket_prefix, staff_role_id, panel_channel_id, category_id, template_id, guild_id))
+    c.commit(); c.close()
+
 def delete_ticket_menu(menu_id, guild_id):
     c = _conn(); cur = c.cursor()
     cur.execute("DELETE FROM ticket_menus WHERE id=? AND guild_id=?", (menu_id, guild_id))
@@ -524,6 +538,14 @@ def get_application_template(template_id, guild_id):
     c = _conn(); cur = c.cursor()
     r = cur.execute("SELECT * FROM application_templates WHERE id=? AND guild_id=?", (template_id, guild_id)).fetchone()
     c.close(); return dict(r) if r else None
+
+def update_application_template(template_id, guild_id, name, description="", role_id=None, review_channel_id=None, questions="[]", color=None, cooldown_days=None):
+    c = _conn(); cur = c.cursor()
+    cur.execute("""UPDATE application_templates SET name=?, description=?, role_id=?,
+                   review_channel_id=?, questions=?, color=?, cooldown_days=?
+                   WHERE id=? AND guild_id=?""",
+                (name, description, role_id, review_channel_id, questions, color, cooldown_days, template_id, guild_id))
+    c.commit(); c.close()
 
 def delete_application_template(template_id, guild_id):
     c = _conn(); cur = c.cursor()
