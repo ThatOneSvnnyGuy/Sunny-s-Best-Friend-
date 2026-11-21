@@ -282,8 +282,8 @@ def dashboard(guild_id):
     st = database.guild_stats(guild_id)
     live = _guild_live(guild_id)
     name = live.get("name") or f"Server {guild_id}"
-    def user_list(rows, key="n", label=""):
-        return "".join([f"<div class='rowline'><span>&lt;@{r['user_id']}&gt;</span><b>{r[key]} {label}</b></div>" for r in rows]) or "<p class='muted'>Nothing yet.</p>"
+    def user_list(rows, key="n", label="", id_key="user_id"):
+        return "".join([f"<div class='rowline'><span>&lt;@{r[id_key]}&gt;</span><b>{r[key]} {label}</b></div>" for r in rows]) or "<p class='muted'>Nothing yet.</p>"
     top_msg = database.top_messages(guild_id)
     top_lvl = database.top_levels(guild_id)
     top_stf = database.top_staff(guild_id, 5)
@@ -324,7 +324,7 @@ def dashboard(guild_id):
     <form method="post"><input type="hidden" name="action" value="announce"><label>Channel ID <input name="channel_id" placeholder="Discord channel ID number"></label><label>Message <textarea name="text" rows="3" placeholder="Type your announcement..."></textarea></label><button>Send to Discord</button></form></div>
     <div class="card"><h3>🏆 Most active members</h3>{user_list(top_msg, "n", "messages")}</div>
     <div class="card"><h3>📈 Top levels</h3>{user_list(top_lvl, "xp", "XP")}</div>
-    <div class="card"><h3>⭐ Top rated staff</h3>{user_list(top_stf, "avg", "★ average")}</div>
+    <div class="card"><h3>⭐ Top rated staff</h3>{user_list(top_stf, "avg", "★ average", id_key="staff_id")}</div>
     <div class="card"><h3>⚙️ Quick settings</h3>
     <form method="post"><input type="hidden" name="next" value="/dashboard/{guild_id}"><label>Command prefix (1-3 characters, e.g. ! or ?)<input name="prefix" value="{prefix}" maxlength="3"></label><button>Save prefix</button></form></div>""", guild_id=guild_id, active="settings")
 @app.route("/dashboard/<int:guild_id>/ratings")
