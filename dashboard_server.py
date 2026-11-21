@@ -25,9 +25,15 @@ import database
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-this-to-a-random-string")
+# Sessions live in a signed browser cookie, which browsers cap at ~4KB.
+# The full Discord user/guild objects blew past that once the whole guild
+# list was stored, so the browser silently dropped the cookie and every
+# page acted signed-out. Keep cookies small and explicit.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "http://localhost:5000/callback")
+app.config["SESSION_COOKIE_SECURE"] = REDIRECT_URI.startswith("https://")
 API = "https://discord.com/api/v10"
 
 PAGE = """
@@ -196,8 +202,12 @@ def callback():
     guilds = _api(token, "/users/@me/guilds") or []
     # Servers where the user can Manage Server (0x20)
     manageable = [g for g in guilds if (int(g.get("permissions", 0)) & 0x20) == 0x20]
-    session["user"] = user; session["token"] = token; session["guilds"] = manageable
-    session["all_guilds"] = guilds; session["staff_guilds"] = []
+    # Store only what the dashboard reads (id / name). The full Discord
+    # objects are far too big for a session cookie — see above.
+    session["user"] = {"id": user["id"], "username": user.get("username")}
+    session["guilds"] = [{"id": g["id"], "name": g.get("name")} for g in manageable]
+    session["all_guilds"] = [{"id": g["id"], "name": g.get("name")} for g in guilds]
+    session["staff_guilds"] = []
     return redirect("/servers")
 
 @app.route("/servers")
