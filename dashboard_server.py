@@ -206,7 +206,7 @@ def servers():
     u = session["user"]; rows = ""
     for g, kind in _accessible_guilds():
         tag = ' <span class="badge">Staff</span>' if kind == "staff" else ""
-        rows += f'<div class="card"><b>{g["name"]}</b>{tag}<br><a href="/dashboard/{g["id"]}"><button>Manage this server</button></a> <a href="https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&scope=bot%20applications.commands&permissions=8&guild_id={g["id"]}">Add bot here</a></div>'
+        rows += f'<div class="card"><b>{g["name"]}</b>{tag}<br><a href="/dashboard/{g["id"]}"><button>Manage this server</button></a> <a href="https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&scope=bot%20applications.commands&permissions=1125899906842615&guild_id={g["id"]}">Add bot here</a></div>'
     if not rows: rows = "<p>No servers where you manage the server or are staff. <a href='/invite'>Invite the bot to a server first</a>.</p>"
     return _render(f"""
     <div class="card">Signed in as <b>{u.get('username')}</b> — <a href="/logout">Sign out</a></div>
@@ -217,7 +217,7 @@ def servers():
 def invite():
     if not CLIENT_ID: return "Set DISCORD_CLIENT_ID first.", 500
     url = (f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}"
-           "&scope=bot%20applications.commands&permissions=8")
+           "&scope=bot%20applications.commands&permissions=1125899906842615")
     return redirect(url)
 
 @app.route("/dashboard/<int:guild_id>", methods=["GET", "POST"])
