@@ -74,6 +74,11 @@ async def _make_bot_role_pink(guild):
 @bot.event
 async def on_guild_join(guild):
     await _make_bot_role_pink(guild)
+    try:
+        from cogs.tickets import register_panel_views
+        register_panel_views(bot, guild.id)
+    except Exception as e:
+        print(f"Could not register ticket panel views for {guild.name}: {e}")
 
 @bot.event
 async def on_ready():
@@ -81,6 +86,14 @@ async def on_ready():
     print(f"✅ In {len(bot.guilds)} server(s)")
     for guild in bot.guilds:
         await _make_bot_role_pink(guild)
+    # Ticket panels can have any number of menus, so each guild's panel
+    # pages are registered as persistent views (survives restarts).
+    try:
+        from cogs.tickets import register_panel_views
+        for guild in bot.guilds:
+            register_panel_views(bot, guild.id)
+    except Exception as e:
+        print(f"Could not register ticket panel views: {e}")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching, name="/verse • /ticket • /help"))
 

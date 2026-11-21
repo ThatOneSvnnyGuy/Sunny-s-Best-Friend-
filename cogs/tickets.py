@@ -206,14 +206,17 @@ def _slug(text: str) -> str:
 def panel_menus(guild_id):
     """The ticket panel's dropdown menus, in order. Each menu is
     (slot, title, placeholder, [(value, label, description, emoji)]).
-    Slot 1 keeps the historic custom_id so panels already posted keep
-    working. With no templates, slot 1 is the built-in topics."""
+    There is NO cap on the number of menus — Discord only allows 5
+    dropdowns per message, so the panel is split into pages of 5
+    (see TicketPanel / panel_pages). Slot 1 keeps the historic custom_id
+    so panels already posted keep working. With no templates, slot 1
+    is the built-in topics."""
     if not guild_id:
         # Generic view for restart persistence: slot 1 has the built-in
-        # topics, slots 2-4 exist only so their interactions still dispatch
+        # topics, slots 2-5 exist only so their interactions still dispatch
         # (real values come from the interaction, not the registered options).
         menus = [(1, "What do you need help with?", "What do you need help with? Pick one...", TOPICS)]
-        for slot in (2, 3, 4):
+        for slot in (2, 3, 4, 5):
             menus.append((slot, f"Menu {slot}", "Pick one...", [("none", "—", "No options in this menu yet", None)]))
         return menus
     menus = database.ensure_ticket_menus(guild_id)
@@ -222,7 +225,7 @@ def panel_menus(guild_id):
     for t in templates:
         by_menu.setdefault(t.get("menu_id") or menus[0]["id"], []).append(t)
     out = []
-    for i, m in enumerate(menus[:4], start=1):
+    for i, m in enumerate(menus, start=1):
         opts = []
         for t in by_menu.get(m["id"], []):
             emoji = t.get("emoji") or None
@@ -235,6 +238,25 @@ def panel_menus(guild_id):
             opts = [("none", "—", "No options in this menu yet", None)]
         out.append((i, m["title"], m.get("placeholder") or m["title"], opts))
     return out
+
+def panel_pages(guild_id):
+    """How many panel messages the guild's menus need (5 dropdowns max per message)."""
+    import math
+    return max(1, math.ceil(len(panel_menus(guild_id)) / 5))
+
+# (guild_id, page) pairs whose persistent views are already registered,
+# so reconnects don't register the same views twice.
+_registered_panel_views = set()
+
+def register_panel_views(bot, guild_id):
+    """Register this guild's panel pages as persistent views, so the
+    dropdowns keep working after a bot restart."""
+    for page in range(panel_pages(guild_id)):
+        key = (guild_id, page)
+        if key in _registered_panel_views:
+            continue
+        bot.add_view(TicketPanel(guild_id, page))
+        _registered_panel_views.add(key)
 
 def panel_embed_settings(guild_id):
     """Panel embed title / description / color, with defaults."""
@@ -299,9 +321,9 @@ async def create_ticket_for(interaction: discord.Interaction, topic: str, label:
     await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
 class TicketPanel(discord.ui.View):
-    def __init__(self, guild_id=None):
+    def __init__(self, guild_id=None, page=0):
         super().__init__(timeout=None)
-        for slot, _title, placeholder, opts in panel_menus(guild_id):
+        for slot, _title, placeholder, opts in panel_menus(guild_id)[page * 5:(page + 1) * 5]:
             self.add_item(TicketMenuSelect(slot, guild_id, opts, placeholder))
 
 class Tickets(commands.Cog):
@@ -322,7 +344,10 @@ class Tickets(commands.Cog):
         if category: database.set_setting(interaction.guild_id, "ticket_category_id", category.id)
         title, desc, color = panel_embed_settings(interaction.guild_id)
         e = discord.Embed(title=title, description=desc, color=color)
-        await panel_channel.send(embed=e, view=TicketPanel(interaction.guild_id))
+        pages = panel_pages(interaction.guild_id)
+        for page in range(pages):
+            await panel_channel.send(embed=e, view=TicketPanel(interaction.guild_id, page))
+        register_panel_views(self.bot, interaction.guild_id)
         await interaction.response.send_message(
             f"✅ Tickets set up:\n"
             f"• Panel posted in {panel_channel.mention}\n"

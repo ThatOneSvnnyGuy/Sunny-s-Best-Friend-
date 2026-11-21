@@ -409,7 +409,9 @@ def section_tickets(guild_id):
 def _post_ticket_panel(guild_id, s):
     """Post the ticket panel straight from the dashboard, using the bot token (server-side only).
     One dropdown per menu (slot 1 keeps the historic custom_id so panels
-    already posted keep working)."""
+    already posted keep working). Discord allows 5 dropdowns per message,
+    so more than 5 menus go out as extra panel messages — no limit on
+    how many menus a server can have."""
     token = os.getenv("DISCORD_TOKEN")
     panel_channel = s.get("panel_channel_id")
     if not token:
@@ -427,35 +429,41 @@ def _post_ticket_panel(guild_id, s):
                {"label": "💳 Billing / Purchase", "value": "billing", "description": "Help with a purchase, order or payment"},
                {"label": "⚖️ Appeal a Punishment", "value": "appeal", "description": "Appeal a ban, timeout or warning"},
                {"label": "✨ Something Else", "value": "other", "description": "Anything that doesn't fit above"}]
-    components = []
-    for i, m in enumerate(menus[:4], start=1):
-        opts = []
-        for t in by_menu.get(m["id"], []):
-            o = {"label": t["name"][:100], "value": f"tpl_{t['id']}", "description": (t.get("description") or "")[:100]}
-            if t.get("emoji") and len(t["emoji"]) <= 4:
-                o["emoji"] = {"name": t["emoji"]}
-            opts.append(o)
-        if i == 1 and not opts:
-            opts = builtin
-        if not opts:
-            opts = [{"label": "—", "value": "none", "description": "No options in this menu yet"}]
-        custom_id = "ticket_topic_select" if i == 1 else f"ticket_menu_{i}"
-        components.append({"type": 1, "components": [{"type": 3, "custom_id": custom_id,
-            "placeholder": (m.get("placeholder") or m["title"])[:150], "options": opts}]})
     title = s.get("ticket_panel_title") or "🎫 Need Help?"
     desc = s.get("ticket_panel_description") or "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards."
     color = s.get("ticket_panel_color") or 5793266
-    try:
-        r = requests.post(f"{API}/channels/{panel_channel}/messages",
-            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
-            json={"embeds": [{"title": title, "description": desc, "color": color}],
-                  "components": components},
-            timeout=10)
-    except Exception as e:
-        return f"<p>⚠️ Couldn't post the panel: {e}</p>"
-    if r.ok:
-        return "<p>✅ Ticket panel posted in Discord.</p>"
-    return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
+    pages = [menus[i:i + 5] for i in range(0, len(menus), 5)] or [menus]
+    posted = 0
+    for pi, page_menus in enumerate(pages):
+        components = []
+        for m in page_menus:
+            i = menus.index(m) + 1
+            opts = []
+            for t in by_menu.get(m["id"], []):
+                o = {"label": t["name"][:100], "value": f"tpl_{t['id']}", "description": (t.get("description") or "")[:100]}
+                if t.get("emoji") and len(t["emoji"]) <= 4:
+                    o["emoji"] = {"name": t["emoji"]}
+                opts.append(o)
+            if i == 1 and not opts:
+                opts = builtin
+            if not opts:
+                opts = [{"label": "—", "value": "none", "description": "No options in this menu yet"}]
+            custom_id = "ticket_topic_select" if i == 1 else f"ticket_menu_{i}"
+            components.append({"type": 1, "components": [{"type": 3, "custom_id": custom_id,
+                "placeholder": (m.get("placeholder") or m["title"])[:150], "options": opts}]})
+        page_title = title if pi == 0 else f"{title} (continued)"
+        try:
+            r = requests.post(f"{API}/channels/{panel_channel}/messages",
+                headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+                json={"embeds": [{"title": page_title, "description": desc, "color": color}],
+                      "components": components},
+                timeout=10)
+        except Exception as e:
+            return f"<p>⚠️ Couldn't post the panel: {e}</p>"
+        if not r.ok:
+            return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
+        posted += 1
+    return f"<p>✅ Ticket panel posted in Discord ({posted} message{'s' if posted > 1 else ''} for {len(menus)} menu{'s' if len(menus) > 1 else ''}).</p>"
 
 @app.route("/dashboard/<int:guild_id>/applications", methods=["GET", "POST"])
 def section_applications(guild_id):
