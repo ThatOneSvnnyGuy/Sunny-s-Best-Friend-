@@ -148,9 +148,9 @@ class AddUserSelectView(discord.ui.View):
         self.add_item(AddUserSelect())
 
 def _can_manage_ticket(guild: discord.Guild, member: discord.Member, ticket):
-    """Who can add/remove people in a ticket: the owner, staff, or anyone with Manage Channels."""
-    if member.id == ticket["owner_id"]:
-        return True
+    """Who can add/remove people in a ticket: STAFF ONLY. The member who
+    opened the ticket cannot add people — they have to be staff
+    (the staff role, or Manage Channels / Administrator)."""
     if member.guild_permissions.manage_channels or member.guild_permissions.administrator:
         return True
     s = database.get_settings(guild.id)
@@ -164,7 +164,7 @@ async def add_user_to_ticket(interaction: discord.Interaction, user: discord.Mem
     if not t:
         await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True); return
     if not _can_manage_ticket(interaction.guild, interaction.user, t):
-        await interaction.response.send_message("Only the ticket owner or staff can add people to this ticket.", ephemeral=True); return
+        await interaction.response.send_message("Only staff can add people to this ticket.", ephemeral=True); return
     if user.id == t["owner_id"]:
         await interaction.response.send_message(f"{user.mention} is the ticket owner — they're already here.", ephemeral=True); return
     await interaction.channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True)
@@ -436,7 +436,7 @@ class Tickets(commands.Cog):
         if not t:
             await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True); return
         if not _can_manage_ticket(interaction.guild, interaction.user, t):
-            await interaction.response.send_message("Only the ticket owner or staff can remove people from this ticket.", ephemeral=True); return
+            await interaction.response.send_message("Only staff can remove people from this ticket.", ephemeral=True); return
         if user.id == t["owner_id"]:
             await interaction.response.send_message("You can't remove the ticket owner.", ephemeral=True); return
         if user.id == interaction.guild.me.id:
