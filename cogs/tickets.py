@@ -136,6 +136,42 @@ class CloseReasonModal(discord.ui.Modal, title="Close ticket"):
         await interaction.response.send_message("Closing ticket - asking the owner to rate...", ephemeral=True)
         await close_ticket_flow(interaction.guild, interaction.channel, interaction.user, str(self.reason) or None)
 
+class AddUserSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Choose a user to add to this ticket...", custom_id="ticket_add_user_select", min_values=1, max_values=1)
+    async def callback(self, interaction: discord.Interaction):
+        await add_user_to_ticket(interaction, self.values[0])
+
+class AddUserSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(AddUserSelect())
+
+def _can_manage_ticket(guild: discord.Guild, member: discord.Member, ticket):
+    """Who can add/remove people in a ticket: the owner, staff, or anyone with Manage Channels."""
+    if member.id == ticket["owner_id"]:
+        return True
+    if member.guild_permissions.manage_channels or member.guild_permissions.administrator:
+        return True
+    s = database.get_settings(guild.id)
+    role_id = s.get("staff_role_id")
+    if role_id and any(r.id == role_id for r in getattr(member, "roles", [])):
+        return True
+    return False
+
+async def add_user_to_ticket(interaction: discord.Interaction, user: discord.Member):
+    t = database.get_ticket(interaction.channel_id)
+    if not t:
+        await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True); return
+    if not _can_manage_ticket(interaction.guild, interaction.user, t):
+        await interaction.response.send_message("Only the ticket owner or staff can add people to this ticket.", ephemeral=True); return
+    if user.id == t["owner_id"]:
+        await interaction.response.send_message(f"{user.mention} is the ticket owner — they're already here.", ephemeral=True); return
+    await interaction.channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True)
+    await interaction.response.send_message(f"✅ Added {user.mention} to this ticket.", ephemeral=True)
+    try: await interaction.channel.send(f"➕ {user.mention} was added to this ticket by {interaction.user.mention}.")
+    except Exception: pass
+
 class TicketControls(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -146,6 +182,9 @@ class TicketControls(discord.ui.View):
             await interaction.response.send_message("Not a ticket channel.", ephemeral=True); return
         database.claim_ticket(interaction.channel_id, interaction.user.id)
         await interaction.response.send_message(f"{interaction.user.mention} claimed this ticket! They'll help you now.", ephemeral=False)
+    @discord.ui.button(label="➕ Add User", style=discord.ButtonStyle.secondary, custom_id="ticket_add_user")
+    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Pick a user to add to this ticket:", view=AddUserSelectView(), ephemeral=True)
     @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.danger, custom_id="ticket_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CloseReasonModal(interaction.channel_id))
@@ -167,6 +206,7 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
         description=f"{owner.mention if owner else 'Ticket owner'}, please rate your experience!\n\nYour rating goes to the staff member who helped you and shows on the staff leaderboard.\n\nYou have **5 minutes** to rate, then this channel deletes.",
         color=discord.Color.gold())
     e.add_field(name="Staff", value=f"<@{staff_id}>" if staff_id else "No staff claimed", inline=True)
+    e.add_field(name="Opened by", value=f"<@{owner_id}>", inline=True)
     if reason:
         e.add_field(name="Close reason", value=reason, inline=False)
     view = RatingView(channel.id, owner_id, staff_id)
@@ -262,7 +302,12 @@ def panel_embed_settings(guild_id):
     """Panel embed title / description / color, with defaults."""
     s = database.get_settings(guild_id) if guild_id else {}
     title = s.get("ticket_panel_title") or "🎫 Need Help?"
-    desc = s.get("ticket_panel_description") or "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards."
+    desc = s.get("ticket_panel_description") or ("Need help? Open a ticket below and our staff team will help you.\n\n"
+        "**How it works**\n"
+        "• Pick a topic from the menu below\n"
+        "• Describe your issue in the ticket\n"
+        "• A staff member will claim it and help you\n\n"
+        "When your ticket closes, you'll be asked to rate your support 1–5 ⭐.")
     color = s.get("ticket_panel_color") or 5793266
     return title, desc, color
 
@@ -308,7 +353,8 @@ async def create_ticket_for(interaction: discord.Interaction, topic: str, label:
     prefix = _slug((tpl or {}).get("ticket_prefix") or "")
     slug = topic.replace("_", "-")
     name = f"{prefix}-{_slug(interaction.user.name)}" if prefix else f"ticket-{_slug(slug)}-{_slug(interaction.user.name)}"
-    channel = await guild.create_text_channel(name[:100], category=category, overwrites=overwrites, reason=f"Ticket created: {label}")
+    channel = await guild.create_text_channel(name[:100], category=category, overwrites=overwrites,
+        topic=f"Ticket opened by {interaction.user} • {label}"[:1024], reason=f"Ticket created: {label}")
     database.create_ticket(channel.id, guild.id, interaction.user.id)
     log_id = s.get("ticket_log_channel_id")
     if log_id:
@@ -316,7 +362,17 @@ async def create_ticket_for(interaction: discord.Interaction, topic: str, label:
         if log_ch:
             try: await log_ch.send(f"🎫 New ticket {channel.mention} opened by {interaction.user.mention} — **{label}** {staff_role.mention if staff_role else ''}")
             except Exception: pass
-    e = discord.Embed(title=f"🎫 Ticket - {label}", description=f"{interaction.user.mention}, thanks for opening a ticket about **{label}**! Describe your issue and staff will be with you soon.\n\n**When this ticket closes, you'll be asked to rate your support 1-5 stars.**", color=discord.Color.blurple())
+    e = discord.Embed(title=f"Ticket — {label}",
+        description=f"{interaction.user.mention}, thanks for opening a ticket. A member of staff will be with you shortly.",
+        color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Opened by", value=interaction.user.mention, inline=True)
+    e.add_field(name="Topic", value=label, inline=True)
+    e.add_field(name="What happens next",
+        value="• Describe your issue in as much detail as you can\n"
+              "• Staff will claim this ticket when they're available\n"
+              "• When it closes, you'll rate your support 1–5 ⭐",
+        inline=False)
+    e.set_footer(text="Sunny's Best Friend • Ticket System")
     await channel.send(f"{interaction.user.mention} {staff_role.mention if staff_role else ''}", embed=e, view=TicketControls())
     await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
@@ -344,6 +400,7 @@ class Tickets(commands.Cog):
         if category: database.set_setting(interaction.guild_id, "ticket_category_id", category.id)
         title, desc, color = panel_embed_settings(interaction.guild_id)
         e = discord.Embed(title=title, description=desc, color=color)
+        e.set_footer(text="Sunny's Best Friend • Ticket System")
         pages = panel_pages(interaction.guild_id)
         for page in range(pages):
             await panel_channel.send(embed=e, view=TicketPanel(interaction.guild_id, page))
@@ -368,6 +425,24 @@ class Tickets(commands.Cog):
             await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True); return
         database.claim_ticket(interaction.channel_id, interaction.user.id)
         await interaction.response.send_message(f"{interaction.user.mention} claimed this ticket!")
+    @app_commands.command(name="add", description="Add someone to this ticket")
+    @app_commands.describe(user="The person to add to this ticket")
+    async def add_cmd(self, interaction: discord.Interaction, user: discord.Member):
+        await add_user_to_ticket(interaction, user)
+    @app_commands.command(name="remove", description="Remove someone from this ticket")
+    @app_commands.describe(user="The person to remove from this ticket")
+    async def remove_cmd(self, interaction: discord.Interaction, user: discord.Member):
+        t = database.get_ticket(interaction.channel_id)
+        if not t:
+            await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True); return
+        if not _can_manage_ticket(interaction.guild, interaction.user, t):
+            await interaction.response.send_message("Only the ticket owner or staff can remove people from this ticket.", ephemeral=True); return
+        if user.id == t["owner_id"]:
+            await interaction.response.send_message("You can't remove the ticket owner.", ephemeral=True); return
+        if user.id == interaction.guild.me.id:
+            await interaction.response.send_message("You can't remove me from the ticket.", ephemeral=True); return
+        await interaction.channel.set_permissions(user, overwrite=None)
+        await interaction.response.send_message(f"Removed {user.mention} from this ticket.")
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))

@@ -379,7 +379,7 @@ def section_tickets(guild_id):
             msg = _post_ticket_panel(guild_id, s)
     templates = database.list_ticket_templates(guild_id)
     menus = database.ensure_ticket_menus(guild_id)
-    _panel_desc_default = "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards."
+    _panel_desc_default = "Need help? Open a ticket below and our staff team will help you.\n\n**How it works**\n• Pick a topic from the menu below\n• Describe your issue in the ticket\n• A staff member will claim it and help you\n\nWhen your ticket closes, you'll be asked to rate your support 1–5 ⭐."
     menu_names = {m["id"]: m["title"] for m in menus}
     def _menu_opts(selected=None):
         return "".join([f'<option value="{m["id"]}"{" selected" if m["id"] == selected else ""}>{m["title"]}</option>' for m in menus])
@@ -457,7 +457,7 @@ def section_tickets(guild_id):
     <label>Rating log channel ID <input name="rating_log_channel_id" value="{s.get('rating_log_channel_id') or ''}" placeholder="Discord ID number"></label>
     <label>Ticket log channel ID <input name="ticket_log_channel_id" value="{s.get('ticket_log_channel_id') or ''}" placeholder="Discord ID number"></label>
     <button>Save settings</button></form>
-    <p><b>Used in Discord:</b> /setup-tickets • /close • /claim • /ratings • /leaderboard • /recent-ratings</p></div>"""
+    <p><b>Used in Discord:</b> /setup-tickets • /close • /claim • /add • /remove • /ratings • /leaderboard • /recent-ratings</p></div>"""
     return _render(body, guild_id=guild_id, active="tickets")
 
 def _post_ticket_panel(guild_id, s):
@@ -484,7 +484,7 @@ def _post_ticket_panel(guild_id, s):
                {"label": "⚖️ Appeal a Punishment", "value": "appeal", "description": "Appeal a ban, timeout or warning"},
                {"label": "✨ Something Else", "value": "other", "description": "Anything that doesn't fit above"}]
     title = s.get("ticket_panel_title") or "🎫 Need Help?"
-    desc = s.get("ticket_panel_description") or "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards."
+    desc = s.get("ticket_panel_description") or "Need help? Open a ticket below and our staff team will help you.\n\n**How it works**\n• Pick a topic from the menu below\n• Describe your issue in the ticket\n• A staff member will claim it and help you\n\nWhen your ticket closes, you'll be asked to rate your support 1–5 ⭐."
     color = s.get("ticket_panel_color") or 5793266
     pages = [menus[i:i + 5] for i in range(0, len(menus), 5)] or [menus]
     posted = 0
@@ -509,7 +509,7 @@ def _post_ticket_panel(guild_id, s):
         try:
             r = requests.post(f"{API}/channels/{panel_channel}/messages",
                 headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
-                json={"embeds": [{"title": page_title, "description": desc, "color": color}],
+                json={"embeds": [{"title": page_title, "description": desc, "color": color, "footer": {"text": "Sunny's Best Friend • Ticket System"}}],
                       "components": components},
                 timeout=10)
         except Exception as e:
