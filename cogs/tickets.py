@@ -408,9 +408,13 @@ class TicketQuestionsModal(discord.ui.Modal):
         await create_ticket_for_menu(interaction, self.menu, answers)
 
 def _ticket_open_embed(label, opener_mention):
-    """The message in the ticket when it opens — kept short on purpose."""
+    """The message in the ticket when it opens — short, but not bare:
+    what the ticket is, and what happens next."""
     e = discord.Embed(title=f"🎫 {label}",
-        description=f"{opener_mention} — staff will be with you shortly.",
+        description=(f"{opener_mention} — thanks for opening a ticket.\n\n"
+                     "• Tell us what's going on in here\n"
+                     "• A staff member will claim it and help you\n"
+                     "• When it closes, you'll rate your support 1–5 ⭐"),
         color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
     e.set_footer(text="Sunny's Best Friend • Ticket System")
     return e
