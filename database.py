@@ -2,7 +2,7 @@
 Ratings, tickets, levels, economy and warns all live here.
 No fake data - everything starts empty.
 """
-import sqlite3, time, os
+import sqlite3, time, os, json
 
 DB_PATH = os.getenv("BOT_DB_PATH") or os.path.join(os.path.dirname(__file__), "bot.db")
 
@@ -82,7 +82,22 @@ def init_db():
         guild_id INTEGER,
         title TEXT,
         placeholder TEXT,
-        position INTEGER DEFAULT 1
+        position INTEGER DEFAULT 1,
+        questions TEXT,          -- JSON: [{question, kind short|long, required}]
+        ticket_prefix TEXT,      -- channel name prefix, e.g. support -> support-username
+        emoji TEXT,
+        category_id INTEGER,
+        role_ids TEXT            -- JSON list of role ids that can see/work these tickets
+    );
+    CREATE TABLE IF NOT EXISTS ticket_panels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER,
+        title TEXT,
+        description TEXT,
+        color INTEGER,
+        channel_id INTEGER,
+        menu_ids TEXT,           -- JSON list of menu ids in this panel; NULL/empty = all menus
+        message_id INTEGER       -- last posted message, for updating in place
     );
     CREATE TABLE IF NOT EXISTS ticket_templates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,12 +148,15 @@ def init_db():
     except Exception: pass
     for _t, _c in [("ticket_templates", "menu_id INTEGER"), ("ticket_templates", "emoji TEXT"),
                   ("ticket_templates", "ticket_prefix TEXT"), ("application_templates", "color INTEGER"),
-                  ("application_templates", "cooldown_days INTEGER")]:
+                  ("application_templates", "cooldown_days INTEGER"),
+                  ("ticket_menus", "questions TEXT"), ("ticket_menus", "ticket_prefix TEXT"),
+                  ("ticket_menus", "emoji TEXT"), ("ticket_menus", "category_id INTEGER"),
+                  ("ticket_menus", "role_ids TEXT"), ("tickets", "menu_id INTEGER")]:
         try: cur.execute(f"ALTER TABLE {_t} ADD COLUMN {_c}")
         except Exception: pass
     c.commit()
     # Migrations for older bot.db files (new columns)
-    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_verse_role_id INTEGER", "faith_prayer_role_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "app_panel_channel_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT", "ticket_panel_title TEXT", "ticket_panel_description TEXT", "ticket_panel_color INTEGER", "ticket_builtins_seeded INTEGER"]:
+    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_verse_role_id INTEGER", "faith_prayer_role_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "app_panel_channel_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT", "ticket_panel_title TEXT", "ticket_panel_description TEXT", "ticket_panel_color INTEGER", "ticket_builtins_seeded INTEGER", "ticket_templates_migrated INTEGER"]:
         try: cur.execute(f"ALTER TABLE settings ADD COLUMN {col}")
         except Exception: pass
     c.commit(); c.close()
@@ -157,9 +175,9 @@ def get_settings(guild_id):
     return dict(row) if row else {}
 
 # --- tickets ---
-def create_ticket(channel_id, guild_id, owner_id):
-    c=_conn(); c.execute("INSERT OR REPLACE INTO tickets (channel_id,guild_id,owner_id,created_at) VALUES (?,?,?,?)",
-        (channel_id, guild_id, owner_id, int(time.time()))); c.commit(); c.close()
+def create_ticket(channel_id, guild_id, owner_id, menu_id=None):
+    c=_conn(); c.execute("INSERT OR REPLACE INTO tickets (channel_id,guild_id,owner_id,created_at,menu_id) VALUES (?,?,?,?,?)",
+        (channel_id, guild_id, owner_id, int(time.time()), menu_id)); c.commit(); c.close()
 
 def claim_ticket(channel_id, staff_id):
     c=_conn(); c.execute("UPDATE tickets SET staff_id=? WHERE channel_id=?", (staff_id, channel_id)); c.commit(); c.close()
@@ -452,22 +470,67 @@ def recent_tickets(guild_id, limit=5):
     c.close()
     return [{"channel_id": r["channel_id"], "owner_id": r["owner_id"], "status": r["status"]} for r in rows]
 
-def add_ticket_menu(guild_id, title, placeholder=""):
+def parse_question_lines(text):
+    """'Question | short/long | required/optional' lines -> list of dicts (max 5)."""
+    qs = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line: continue
+        parts = [p.strip() for p in line.split("|")]
+        q = parts[0][:100]
+        kind = (parts[1].lower() if len(parts) > 1 else "short")
+        kind = "long" if kind.startswith("long") else "short"
+        req = True
+        if len(parts) > 2:
+            req = parts[2].lower() in ("required", "yes", "true")
+        qs.append({"question": q, "kind": kind, "required": req})
+        if len(qs) >= 5: break
+    return qs
+
+def format_question_lines(questions):
+    out = []
+    for q in questions or []:
+        out.append(f"{q['question']} | {q.get('kind', 'short')} | {'required' if q.get('required', True) else 'optional'}")
+    return "\n".join(out)
+
+def menu_questions(menu):
+    try: return json.loads(menu.get("questions") or "[]") or []
+    except Exception: return []
+
+def menu_role_ids(menu):
+    try: return [int(x) for x in (json.loads(menu.get("role_ids") or "[]") or [])]
+    except Exception: return []
+
+def panel_menu_ids(panel):
+    try: return [int(x) for x in (json.loads(panel.get("menu_ids") or "[]") or [])]
+    except Exception: return []
+
+def add_ticket_menu(guild_id, title, placeholder="", questions=None, ticket_prefix=None, emoji=None, category_id=None, role_ids=None):
     c = _conn(); cur = c.cursor()
     pos = cur.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM ticket_menus WHERE guild_id=?", (guild_id,)).fetchone()[0]
-    cur.execute("INSERT INTO ticket_menus (guild_id, title, placeholder, position) VALUES (?,?,?,?)",
-                (guild_id, title, placeholder, pos))
+    cur.execute("INSERT INTO ticket_menus (guild_id, title, placeholder, position, questions, ticket_prefix, emoji, category_id, role_ids) VALUES (?,?,?,?,?,?,?,?,?)",
+                (guild_id, title, placeholder, pos,
+                 json.dumps(questions or []), (ticket_prefix or "").strip() or None,
+                 (emoji or "").strip() or None, category_id,
+                 json.dumps(role_ids or []) if role_ids else None))
     c.commit(); mid = cur.lastrowid; c.close(); return mid
+
+def get_ticket_menu(menu_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    r = cur.execute("SELECT * FROM ticket_menus WHERE id=? AND guild_id=?", (menu_id, guild_id)).fetchone()
+    c.close(); return dict(r) if r else None
 
 def list_ticket_menus(guild_id):
     c = _conn(); cur = c.cursor()
     rows = cur.execute("SELECT * FROM ticket_menus WHERE guild_id=? ORDER BY position, id", (guild_id,)).fetchall()
     c.close(); return [dict(r) for r in rows]
 
-def update_ticket_menu(menu_id, guild_id, title, placeholder=""):
+def update_ticket_menu(menu_id, guild_id, title, placeholder="", questions=None, ticket_prefix=None, emoji=None, category_id=None, role_ids=None):
     c = _conn(); cur = c.cursor()
-    cur.execute("UPDATE ticket_menus SET title=?, placeholder=? WHERE id=? AND guild_id=?",
-                (title, placeholder, menu_id, guild_id))
+    cur.execute("UPDATE ticket_menus SET title=?, placeholder=?, questions=?, ticket_prefix=?, emoji=?, category_id=?, role_ids=? WHERE id=? AND guild_id=?",
+                (title, placeholder, json.dumps(questions or []), (ticket_prefix or "").strip() or None,
+                 (emoji or "").strip() or None, category_id,
+                 json.dumps(role_ids or []) if role_ids else None, menu_id, guild_id))
     c.commit(); c.close()
 
 def update_ticket_template(template_id, guild_id, name, description="", menu_id=None, emoji=None, ticket_prefix=None, staff_role_id=None, panel_channel_id=None, category_id=None):
@@ -488,38 +551,80 @@ def delete_ticket_menu(menu_id, guild_id):
 # dashboard options (not hardcoded) so the owner can edit or delete them.
 # Tuple: (value, label, description, emoji, ticket_prefix)
 BUILTIN_TICKET_TOPICS = [
-    ("general", "💬 General Help", "I need help with something", None, "general"),
-    ("report", "🚨 Report a Player", "Report someone breaking the rules", None, "report"),
-    ("bug", "🐛 Bug Report", "Something in the server / bot is broken", None, "bug"),
-    ("billing", "💳 Billing / Purchase", "Help with a purchase, order or payment", None, "billing"),
-    ("appeal", "⚖️ Appeal a Punishment", "Appeal a ban, timeout or warning", None, "appeal"),
-    ("other", "✨ Something Else", "Anything that doesn't fit above", None, "other"),
+    ("general", "General Help", "I need help with something", "💬", "general"),
+    ("report", "Report a Player", "Report someone breaking the rules", "🚨", "report"),
+    ("bug", "Bug Report", "Something in the server / bot is broken", "🐛", "bug"),
+    ("billing", "Billing / Purchase", "Help with a purchase, order or payment", "💳", "billing"),
+    ("appeal", "Appeal a Punishment", "Appeal a ban, timeout or warning", "⚖️", "appeal"),
+    ("other", "Something Else", "Anything that doesn't fit above", "✨", "other"),
 ]
 
 def ensure_ticket_menus(guild_id):
-    """Every template belongs to a menu. Templates made before menus
-    existed get moved into a default first menu automatically. The first
-    time a server uses tickets, the 6 starter options are seeded as real
-    templates in that menu, so the owner can edit or delete them like
-    any other option (they used to be hardcoded and undeletable)."""
+    """Menus ARE the ticket types now — and nothing is auto-seeded. The
+    panel only ever shows the ticket types the server set in the dashboard.
+    Old ticket options (templates) are converted into menus once, except
+    the auto-seeded starter options, which nobody set and are dropped;
+    the auto-created 'Support' container menu goes too."""
     menus = list_ticket_menus(guild_id)
-    if not menus:
-        mid = add_ticket_menu(guild_id, "Support", "What do you need help with? Pick one...")
+    s = get_settings(guild_id)
+    if not s.get("ticket_templates_migrated"):
+        # Seeded starters were stored with the emoji in the name
+        # ("💬 General Help"), so match on both spellings.
+        builtin = set()
+        for _v, label, desc, emoji, _p in BUILTIN_TICKET_TOPICS:
+            builtin.add((label, desc))
+            if emoji:
+                builtin.add((f"{emoji} {label}", desc))
+        for t in list_ticket_templates(guild_id):
+            if (t["name"], t.get("description") or "") in builtin:
+                continue  # auto-seeded starter, never set by the server — drop it
+            role_ids = [t["staff_role_id"]] if t.get("staff_role_id") else None
+            add_ticket_menu(guild_id, t["name"], t.get("description") or "",
+                            ticket_prefix=t.get("ticket_prefix"), emoji=t.get("emoji"),
+                            category_id=t.get("category_id"), role_ids=role_ids)
+            # Templates stay in the table: already-posted panels still
+            # resolve their labels and staff settings from them.
+        for m in list_ticket_menus(guild_id):
+            if m["title"] == "Support" and (m.get("placeholder") or "") == "What do you need help with? Pick one...":
+                delete_ticket_menu(m["id"], guild_id)
+        set_setting(guild_id, "ticket_templates_migrated", 1)
         menus = list_ticket_menus(guild_id)
-    first = menus[0]["id"]
+    return menus
+
+# --- ticket panels (a guild can have more than one) ---
+def list_ticket_panels(guild_id):
     c = _conn(); cur = c.cursor()
-    cur.execute("UPDATE ticket_templates SET menu_id=? WHERE guild_id=? AND menu_id IS NULL", (first, guild_id))
-    c.commit()
-    s = dict(cur.execute("SELECT ticket_builtins_seeded FROM settings WHERE guild_id=?", (guild_id,)).fetchone() or {})
-    has_templates = cur.execute("SELECT COUNT(*) FROM ticket_templates WHERE guild_id=?", (guild_id,)).fetchone()[0] > 0
-    if not s.get("ticket_builtins_seeded") and not has_templates:
-        for value, label, desc, emoji, prefix in BUILTIN_TICKET_TOPICS:
-            cur.execute("INSERT INTO ticket_templates (guild_id, name, description, menu_id, emoji, ticket_prefix) VALUES (?,?,?,?,?,?)",
-                        (guild_id, label, desc, first, emoji, prefix))
-        c.commit()
-    c.close()
-    set_setting(guild_id, "ticket_builtins_seeded", 1)
-    return list_ticket_menus(guild_id)
+    rows = cur.execute("SELECT * FROM ticket_panels WHERE guild_id=? ORDER BY id", (guild_id,)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def get_ticket_panel(panel_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    r = cur.execute("SELECT * FROM ticket_panels WHERE id=? AND guild_id=?", (panel_id, guild_id)).fetchone()
+    c.close(); return dict(r) if r else None
+
+def add_ticket_panel(guild_id, title, description="", color=None, channel_id=None, menu_ids=None):
+    c = _conn(); cur = c.cursor()
+    cur.execute("INSERT INTO ticket_panels (guild_id, title, description, color, channel_id, menu_ids) VALUES (?,?,?,?,?,?)",
+                (guild_id, title, description, color, channel_id,
+                 json.dumps(menu_ids) if menu_ids else None))
+    c.commit(); pid = cur.lastrowid; c.close(); return pid
+
+def update_ticket_panel(panel_id, guild_id, title, description="", color=None, channel_id=None, menu_ids=None, message_id=None):
+    c = _conn(); cur = c.cursor()
+    if message_id is None:
+        cur.execute("UPDATE ticket_panels SET title=?, description=?, color=?, channel_id=?, menu_ids=? WHERE id=? AND guild_id=?",
+                    (title, description, color, channel_id,
+                     json.dumps(menu_ids) if menu_ids else None, panel_id, guild_id))
+    else:
+        cur.execute("UPDATE ticket_panels SET title=?, description=?, color=?, channel_id=?, menu_ids=?, message_id=? WHERE id=? AND guild_id=?",
+                    (title, description, color, channel_id,
+                     json.dumps(menu_ids) if menu_ids else None, message_id, panel_id, guild_id))
+    c.commit(); c.close()
+
+def delete_ticket_panel(panel_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("DELETE FROM ticket_panels WHERE id=? AND guild_id=?", (panel_id, guild_id))
+    c.commit(); c.close()
 
 def add_ticket_template(guild_id, name, description="", staff_role_id=None, panel_channel_id=None, category_id=None, menu_id=None, emoji=None, ticket_prefix=None):
     c = _conn(); cur = c.cursor()

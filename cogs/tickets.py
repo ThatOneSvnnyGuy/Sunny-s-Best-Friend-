@@ -147,15 +147,34 @@ class AddUserSelectView(discord.ui.View):
         super().__init__(timeout=120)
         self.add_item(AddUserSelect())
 
+def _ticket_menu_roles(guild: discord.Guild, ticket):
+    """Roles that can work this ticket: the ticket menu's own roles, else
+    the guild staff role. The opener's roles never count on their own."""
+    menu = None
+    if ticket and ticket.get("menu_id"):
+        menu = database.get_ticket_menu(ticket["menu_id"], guild.id)
+    if menu:
+        roles = [guild.get_role(rid) for rid in database.menu_role_ids(menu)]
+        roles = [r for r in roles if r is not None]
+        if roles:
+            return roles
+    s = database.get_settings(guild.id)
+    staff_role = guild.get_role(s.get("staff_role_id")) if s.get("staff_role_id") else None
+    return [staff_role] if staff_role else []
+
 def _can_manage_ticket(guild: discord.Guild, member: discord.Member, ticket):
-    """Who can add/remove people in a ticket: STAFF ONLY. The member who
-    opened the ticket cannot add people — they have to be staff
-    (the staff role, or Manage Channels / Administrator)."""
+    """Who can add/remove people, claim, or work a ticket: STAFF ONLY.
+    The member who opened the ticket cannot — they have to be staff
+    (the ticket menu's roles, the guild staff role, or Manage Channels /
+    Administrator)."""
     if member.guild_permissions.manage_channels or member.guild_permissions.administrator:
         return True
+    member_role_ids = {r.id for r in getattr(member, "roles", [])}
     s = database.get_settings(guild.id)
     role_id = s.get("staff_role_id")
-    if role_id and any(r.id == role_id for r in getattr(member, "roles", [])):
+    if role_id and role_id in member_role_ids:
+        return True
+    if any(r.id in member_role_ids for r in _ticket_menu_roles(guild, ticket)):
         return True
     return False
 
@@ -180,6 +199,10 @@ class TicketControls(discord.ui.View):
         t = database.get_ticket(interaction.channel_id)
         if not t:
             await interaction.response.send_message("Not a ticket channel.", ephemeral=True); return
+        if interaction.user.id == t["owner_id"]:
+            await interaction.response.send_message("You opened this ticket — let a staff member claim it.", ephemeral=True); return
+        if not _can_manage_ticket(interaction.guild, interaction.user, t):
+            await interaction.response.send_message("Only staff can claim tickets.", ephemeral=True); return
         database.claim_ticket(interaction.channel_id, interaction.user.id)
         await interaction.response.send_message(f"{interaction.user.mention} claimed this ticket! They'll help you now.", ephemeral=False)
     @discord.ui.button(emoji="➕", style=discord.ButtonStyle.secondary, custom_id="ticket_add_user")
@@ -187,6 +210,9 @@ class TicketControls(discord.ui.View):
         await interaction.response.send_message("Pick a user to add to this ticket:", view=AddUserSelectView(), ephemeral=True)
     @discord.ui.button(emoji="🔒", style=discord.ButtonStyle.danger, custom_id="ticket_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        t = database.get_ticket(interaction.channel_id)
+        if t and interaction.user.id != t["owner_id"] and not _can_manage_ticket(interaction.guild, interaction.user, t):
+            await interaction.response.send_message("Only the ticket owner or staff can close this ticket.", ephemeral=True); return
         await interaction.response.send_modal(CloseReasonModal(interaction.channel_id))
 
 async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, closer: discord.Member, reason: str = None):
@@ -227,7 +253,7 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
         try: await ch.delete(reason="Ticket closed, rating window expired")
         except Exception: pass
 
-TOPICS = [(v, l, d, e) for v, l, d, e, _p in database.BUILTIN_TICKET_TOPICS]
+TOPICS = [(v, (f"{e} {l}" if e else l), d, e) for v, l, d, e, _p in database.BUILTIN_TICKET_TOPICS]
 
 def _slug(text: str) -> str:
     """Make a string safe for a Discord channel name."""
@@ -236,18 +262,207 @@ def _slug(text: str) -> str:
         out = out.replace("--", "-")
     return out.strip("-") or "ticket"
 
+# ---------------------------------------------------------------------------
+# NEW PANEL MODEL (2026-11-20): one dropdown per panel, and its options ARE
+# the menus (ticket types) made in the dashboard. Picking a menu opens a
+# ticket named for that menu (support-username, partnership-username, ...)
+# and asks that menu's questions first, if it has any. A guild can have
+# more than one panel.
+# ---------------------------------------------------------------------------
+
+def panel_options(guild_id, menu_ids=None):
+    """The panel dropdown's options: (value, label, description, emoji).
+    menu_ids=None means every menu in the guild."""
+    menus = database.ensure_ticket_menus(guild_id) if guild_id else []
+    if menu_ids:
+        menus = [m for m in menus if m["id"] in menu_ids]
+    opts = []
+    for m in menus:
+        emoji = m.get("emoji") or None
+        if emoji and len(emoji) > 4:
+            emoji = None  # custom <:name:id> emoji aren't usable in select options
+        opts.append((f"menu_{m['id']}", m["title"][:100], (m.get("placeholder") or "")[:100], emoji))
+    return opts
+
+class TicketQuestionsModal(discord.ui.Modal):
+    """The questions for the menu the member picked, asked before the
+    ticket opens. Discord modals cap at 5 questions."""
+    def __init__(self, menu):
+        self.menu = menu
+        self.questions = database.menu_questions(menu)[:5]
+        super().__init__(title=(menu["title"] or "Ticket")[:45])
+        for q in self.questions:
+            self.add_item(discord.ui.TextInput(
+                label=q["question"][:45],
+                style=discord.TextStyle.paragraph if q.get("kind") == "long" else discord.TextStyle.short,
+                required=bool(q.get("required", True)), max_length=1000))
+    async def on_submit(self, interaction: discord.Interaction):
+        answers = {}
+        for q, child in zip(self.questions, self.children):
+            val = (child.value or "").strip()
+            if val:
+                answers[q["question"]] = val
+        await interaction.response.defer(ephemeral=True)
+        await create_ticket_for_menu(interaction, self.menu, answers)
+
+async def create_ticket_for_menu(interaction: discord.Interaction, menu, answers=None):
+    """Open the ticket for a menu: named for what it is, visible only to
+    the opener, the bot, and that menu's roles (or the guild staff role)."""
+    guild = interaction.guild
+    s = database.get_settings(guild.id)
+    roles = _ticket_menu_roles(guild, {"menu_id": menu["id"]})
+    category = guild.get_channel(menu.get("category_id") or s.get("ticket_category_id")) if (menu.get("category_id") or s.get("ticket_category_id")) else None
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    for r in roles:
+        overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    prefix = _slug(menu.get("ticket_prefix") or "")
+    label = menu["title"]
+    name = f"{prefix}-{_slug(interaction.user.name)}" if prefix else f"ticket-{_slug(label)}-{_slug(interaction.user.name)}"
+    channel = await guild.create_text_channel(name[:100], category=category, overwrites=overwrites,
+        topic=f"Ticket opened by {interaction.user} • {label}"[:1024], reason=f"Ticket created: {label}")
+    database.create_ticket(channel.id, guild.id, interaction.user.id, menu_id=menu["id"])
+    mentions = " ".join(r.mention for r in roles)
+    log_id = s.get("ticket_log_channel_id")
+    if log_id:
+        log_ch = guild.get_channel(log_id)
+        if log_ch:
+            try: await log_ch.send(f"🎫 New ticket {channel.mention} opened by {interaction.user.mention} — **{label}** {mentions}")
+            except Exception: pass
+    e = discord.Embed(title=f"Ticket — {label}",
+        description=f"{interaction.user.mention}, thanks for opening a ticket. A member of staff will be with you shortly.",
+        color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Opened by", value=interaction.user.mention, inline=True)
+    e.add_field(name="Type", value=label, inline=True)
+    for q, a in (answers or {}).items():
+        e.add_field(name=q[:256], value=a[:1024], inline=False)
+    e.add_field(name="What happens next",
+        value="• Staff will claim this ticket when they're available\n"
+              "• When it closes, you'll rate your support 1–5 ⭐",
+        inline=False)
+    e.add_field(name="Buttons", value="🙋 Claim this ticket  •  ➕ Add someone  •  🔒 Close this ticket", inline=False)
+    e.set_footer(text="Sunny's Best Friend • Ticket System")
+    await channel.send(f"{interaction.user.mention} {mentions}", embed=e, view=TicketControls())
+    msg = f"Ticket created: {channel.mention}"
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
+
+class TicketPanelSelect(discord.ui.Select):
+    def __init__(self, guild_id=None, menu_ids=None, placeholder="Pick a ticket type..."):
+        opts = panel_options(guild_id, menu_ids) if guild_id else []
+        if not opts:
+            # No ticket types set up yet — the dropdown still has to have
+            # one option to exist, and picking it explains what to do.
+            opts = [("menu_0", "—", "Pick a ticket type", None)]
+        super().__init__(
+            placeholder=placeholder[:150],
+            custom_id="ticket_panel_select",
+            options=[discord.SelectOption(label=label, value=value, description=desc, emoji=emoji) for value, label, desc, emoji in opts],
+        )
+    async def callback(self, interaction: discord.Interaction):
+        value = self.values[0]
+        if not value.startswith("menu_") or value == "menu_0":
+            await interaction.response.send_message("No ticket types set up yet — ask an admin to add some in the dashboard.", ephemeral=True); return
+        menu = database.get_ticket_menu(int(value[5:]), interaction.guild_id)
+        if not menu:
+            await interaction.response.send_message("That ticket type doesn't exist anymore.", ephemeral=True); return
+        questions = database.menu_questions(menu)
+        if questions:
+            await interaction.response.send_modal(TicketQuestionsModal(menu))
+        else:
+            await create_ticket_for_menu(interaction, menu)
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self, guild_id=None, panel=None):
+        super().__init__(timeout=None)
+        menu_ids = database.panel_menu_ids(panel) if panel else None
+        placeholder = (panel.get("title") if panel else None) or "Pick a ticket type..."
+        self.add_item(TicketPanelSelect(guild_id, menu_ids, placeholder))
+
+def panel_embed(panel, guild_id):
+    title = panel.get("title") or "🎫 Need Help?"
+    desc = panel.get("description") or ("Need help? Open a ticket below and our staff team will help you.\n\n"
+        "**How it works**\n"
+        "• Pick a ticket type from the menu below\n"
+        "• Answer its questions, if it has any\n"
+        "• A staff member will claim it and help you\n\n"
+        "When your ticket closes, you'll be asked to rate your support 1–5 ⭐.")
+    color = panel.get("color") or 5793266
+    e = discord.Embed(title=title, description=desc, color=color)
+    e.set_footer(text="Sunny's Best Friend • Ticket System")
+    return e
+
+async def post_panel(bot, guild, panel):
+    """Post a panel, or update it in place if it was posted before."""
+    channel = guild.get_channel(panel.get("channel_id"))
+    if not channel:
+        return None
+    view = TicketPanelView(guild.id, panel)
+    e = panel_embed(panel, guild.id)
+    msg_id = panel.get("message_id")
+    if msg_id:
+        try:
+            msg = await channel.fetch_message(msg_id)
+            await msg.edit(embed=e, view=view)
+            return msg
+        except Exception:
+            pass
+    msg = await channel.send(embed=e, view=view)
+    database.update_ticket_panel(panel["id"], guild.id, panel.get("title"), panel.get("description"),
+                                 panel.get("color"), panel.get("channel_id"),
+                                 database.panel_menu_ids(panel) or None, message_id=msg.id)
+    return msg
+
+def panel_embed_settings(guild_id):
+    """Panel embed title / description / color, with defaults."""
+    s = database.get_settings(guild_id) if guild_id else {}
+    title = s.get("ticket_panel_title") or "🎫 Need Help?"
+    desc = s.get("ticket_panel_description") or ("Need help? Open a ticket below and our staff team will help you.\n\n"
+        "**How it works**\n"
+        "• Pick a topic from the menu below\n"
+        "• Describe your issue in the ticket\n"
+        "• A staff member will claim it and help you\n\n"
+        "When your ticket closes, you'll be asked to rate your support 1–5 ⭐.")
+    color = s.get("ticket_panel_color") or 5793266
+    return title, desc, color
+
+# (guild_id, panel_id) pairs whose persistent views are already registered,
+# so reconnects don't register the same views twice.
+_registered_panel_views = set()
+
+def register_panel_views(bot, guild_id):
+    """Register this guild's panels as persistent views, so the dropdowns
+    keep working after a bot restart. Old slot-based panels too."""
+    for panel in database.list_ticket_panels(guild_id):
+        key = (guild_id, panel["id"])
+        if key in _registered_panel_views:
+            continue
+        bot.add_view(TicketPanelView(guild_id, panel))
+        _registered_panel_views.add(key)
+    for page in range(panel_pages(guild_id)):
+        key = (guild_id, "old", page)
+        if key in _registered_panel_views:
+            continue
+        bot.add_view(TicketPanel(guild_id, page))
+        _registered_panel_views.add(key)
+
+# ---------------------------------------------------------------------------
+# OLD PANEL MODEL — kept so panels already posted keep working. A panel had
+# one dropdown per menu (up to 5 per message); its options were ticket
+# templates. New panels use TicketPanelView above instead.
+# ---------------------------------------------------------------------------
+
 def panel_menus(guild_id):
-    """The ticket panel's dropdown menus, in order. Each menu is
+    """The OLD ticket panel's dropdown menus, in order. Each menu is
     (slot, title, placeholder, [(value, label, description, emoji)]).
-    There is NO cap on the number of menus — Discord only allows 5
-    dropdowns per message, so the panel is split into pages of 5
-    (see TicketPanel / panel_pages). Slot 1 keeps the historic custom_id
-    so panels already posted keep working. With no templates, the
-    starter options are seeded as real templates (see database)."""
+    Slot 1 keeps the historic custom_id so panels already posted keep
+    working."""
     if not guild_id:
-        # Generic view for restart persistence: slot 1 has the built-in
-        # topics, slots 2-5 exist only so their interactions still dispatch
-        # (real values come from the interaction, not the registered options).
         menus = [(1, "What do you need help with?", "What do you need help with? Pick one...", TOPICS)]
         for slot in (2, 3, 4, 5):
             menus.append((slot, f"Menu {slot}", "Pick one...", [("none", "—", "No options in this menu yet", None)]))
@@ -270,46 +485,10 @@ def panel_menus(guild_id):
         out.append((i, m["title"], m.get("placeholder") or m["title"], opts))
     return out
 
-def _menu_question_lines(page_menus):
-    """One line per menu for the panel embed: the menu NAME is the
-    dropdown button now, so the question text goes here instead."""
-    lines = []
-    for _slot, title, ph, _opts in page_menus:
-        if ph and ph.strip() and ph.strip() != title:
-            lines.append(f"**{title}** — {ph}")
-    return lines
-
 def panel_pages(guild_id):
-    """How many panel messages the guild's menus need (5 dropdowns max per message)."""
+    """How many panel messages the guild's OLD menus need (5 dropdowns max per message)."""
     import math
     return max(1, math.ceil(len(panel_menus(guild_id)) / 5))
-
-# (guild_id, page) pairs whose persistent views are already registered,
-# so reconnects don't register the same views twice.
-_registered_panel_views = set()
-
-def register_panel_views(bot, guild_id):
-    """Register this guild's panel pages as persistent views, so the
-    dropdowns keep working after a bot restart."""
-    for page in range(panel_pages(guild_id)):
-        key = (guild_id, page)
-        if key in _registered_panel_views:
-            continue
-        bot.add_view(TicketPanel(guild_id, page))
-        _registered_panel_views.add(key)
-
-def panel_embed_settings(guild_id):
-    """Panel embed title / description / color, with defaults."""
-    s = database.get_settings(guild_id) if guild_id else {}
-    title = s.get("ticket_panel_title") or "🎫 Need Help?"
-    desc = s.get("ticket_panel_description") or ("Need help? Open a ticket below and our staff team will help you.\n\n"
-        "**How it works**\n"
-        "• Pick a topic from the menu below\n"
-        "• Describe your issue in the ticket\n"
-        "• A staff member will claim it and help you\n\n"
-        "When your ticket closes, you'll be asked to rate your support 1–5 ⭐.")
-    color = s.get("ticket_panel_color") or 5793266
-    return title, desc, color
 
 class TicketMenuSelect(discord.ui.Select):
     def __init__(self, slot, guild_id=None, options=None, placeholder="Pick one..."):
@@ -401,34 +580,42 @@ class Tickets(commands.Cog):
         database.set_setting(interaction.guild_id, "rating_log_channel_id", rating_log_channel.id)
         database.set_setting(interaction.guild_id, "ticket_log_channel_id", ticket_log_channel.id)
         if category: database.set_setting(interaction.guild_id, "ticket_category_id", category.id)
+        database.ensure_ticket_menus(interaction.guild_id)
         title, desc, color = panel_embed_settings(interaction.guild_id)
-        lines = _menu_question_lines(panel_menus(interaction.guild_id))
-        if lines:
-            desc = desc + "\n\n" + "\n".join(lines)
-        e = discord.Embed(title=title, description=desc, color=color)
-        e.set_footer(text="Sunny's Best Friend • Ticket System")
-        pages = panel_pages(interaction.guild_id)
-        for page in range(pages):
-            await panel_channel.send(embed=e, view=TicketPanel(interaction.guild_id, page))
+        panels = database.list_ticket_panels(interaction.guild_id)
+        panel = next((p for p in panels if p.get("channel_id") == panel_channel.id), None)
+        if panel is None:
+            pid = database.add_ticket_panel(interaction.guild_id, title, desc, color, panel_channel.id, None)
+            panel = database.get_ticket_panel(pid, interaction.guild_id)
+        msg = await post_panel(self.bot, interaction.guild, panel)
         register_panel_views(self.bot, interaction.guild_id)
+        if msg is None:
+            await interaction.response.send_message("Couldn't post the panel — check the channel.", ephemeral=True); return
         await interaction.response.send_message(
             f"✅ Tickets set up:\n"
             f"• Panel posted in {panel_channel.mention}\n"
             f"• Staff role: {staff_role.mention}\n"
             f"• Ratings go to {rating_log_channel.mention}\n"
             f"• New-ticket alerts go to {ticket_log_channel.mention}\n"
-            f"• Ticket channels go in {category.mention if category else 'no category'}", ephemeral=True)
+            f"• Ticket channels go in {category.mention if category else 'no category'}\n"
+            f"• Ticket types are the menus in the dashboard — add questions, a ticket name and roles per type there", ephemeral=True)
     @app_commands.command(name="close", description="Close this ticket and ask the owner to rate it")
     async def close_cmd(self, interaction: discord.Interaction):
         t = database.get_ticket(interaction.channel_id)
         if not t:
             await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True); return
+        if interaction.user.id != t["owner_id"] and not _can_manage_ticket(interaction.guild, interaction.user, t):
+            await interaction.response.send_message("Only the ticket owner or staff can close this ticket.", ephemeral=True); return
         await interaction.response.send_modal(CloseReasonModal(interaction.channel_id))
     @app_commands.command(name="claim", description="Claim this ticket")
     async def claim_cmd(self, interaction: discord.Interaction):
         t = database.get_ticket(interaction.channel_id)
         if not t:
             await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True); return
+        if interaction.user.id == t["owner_id"]:
+            await interaction.response.send_message("You opened this ticket — let a staff member claim it.", ephemeral=True); return
+        if not _can_manage_ticket(interaction.guild, interaction.user, t):
+            await interaction.response.send_message("Only staff can claim tickets.", ephemeral=True); return
         database.claim_ticket(interaction.channel_id, interaction.user.id)
         await interaction.response.send_message(f"{interaction.user.mention} claimed this ticket!")
     @app_commands.command(name="add", description="Add someone to this ticket")
@@ -453,4 +640,5 @@ class Tickets(commands.Cog):
 async def setup(bot):
     await bot.add_cog(Tickets(bot))
     bot.add_view(TicketPanel())
+    bot.add_view(TicketPanelView())
     bot.add_view(TicketControls())

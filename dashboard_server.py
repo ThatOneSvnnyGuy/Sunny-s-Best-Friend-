@@ -125,6 +125,45 @@ def _api(token, path):
     r = requests.get(f"{API}{path}", headers={"Authorization": f"Bearer {token}"}, timeout=10)
     return r.json() if r.ok else None
 
+def _can_access(guild_id):
+    """Who can open a server's dashboard: anyone with Manage Server, or
+    anyone with the server's staff role (checked through the bot).
+    Everything in the dashboard is stored per server, so every staff
+    member who opens it sees the same settings."""
+    if any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+        return True
+    if guild_id in session.get("staff_guilds", []):
+        return True
+    # Staff-role check (cached in the session so it runs once per login)
+    token = os.getenv("DISCORD_TOKEN")
+    user = session.get("user") or {}
+    staff_role = database.get_settings(guild_id).get("staff_role_id")
+    if not token or not user.get("id") or not staff_role:
+        return False
+    try:
+        r = requests.get(f"{API}/guilds/{guild_id}/members/{user['id']}",
+                         headers={"Authorization": f"Bot {token}"}, timeout=10)
+        if r.ok and int(staff_role) in [int(x) for x in (r.json().get("roles") or [])]:
+            session.setdefault("staff_guilds", []).append(guild_id)
+            session.modified = True
+            return True
+    except Exception:
+        pass
+    return False
+
+def _accessible_guilds():
+    """Manageable servers plus staff-role servers, for the server list."""
+    out, seen = [], set()
+    for g in session.get("guilds", []):
+        out.append((g, "manager")); seen.add(int(g["id"]))
+    for g in session.get("all_guilds", []):
+        gid = int(g["id"])
+        if gid in seen:
+            continue
+        if _can_access(gid):
+            out.append((g, "staff")); seen.add(gid)
+    return out
+
 @app.route("/")
 def home():
     if "user" in session:
@@ -155,18 +194,20 @@ def callback():
     token = r.json()["access_token"]
     user = _api(token, "/users/@me")
     guilds = _api(token, "/users/@me/guilds") or []
-    # Only servers where the user can Manage Server (0x20)
+    # Servers where the user can Manage Server (0x20)
     manageable = [g for g in guilds if (int(g.get("permissions", 0)) & 0x20) == 0x20]
     session["user"] = user; session["token"] = token; session["guilds"] = manageable
+    session["all_guilds"] = guilds; session["staff_guilds"] = []
     return redirect("/servers")
 
 @app.route("/servers")
 def servers():
     if "user" not in session: return redirect("/")
     u = session["user"]; rows = ""
-    for g in session.get("guilds", []):
-        rows += f'<div class="card"><b>{g["name"]}</b><br><a href="/dashboard/{g["id"]}"><button>Manage this server</button></a> <a href="https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&scope=bot%20applications.commands&permissions=8&guild_id={g["id"]}">Add bot here</a></div>'
-    if not rows: rows = "<p>No servers where you have Manage Server. <a href='/invite'>Invite the bot to a server first</a>.</p>"
+    for g, kind in _accessible_guilds():
+        tag = ' <span class="badge">Staff</span>' if kind == "staff" else ""
+        rows += f'<div class="card"><b>{g["name"]}</b>{tag}<br><a href="/dashboard/{g["id"]}"><button>Manage this server</button></a> <a href="https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&scope=bot%20applications.commands&permissions=8&guild_id={g["id"]}">Add bot here</a></div>'
+    if not rows: rows = "<p>No servers where you manage the server or are staff. <a href='/invite'>Invite the bot to a server first</a>.</p>"
     return _render(f"""
     <div class="card">Signed in as <b>{u.get('username')}</b> — <a href="/logout">Sign out</a></div>
     <h2>Your servers</h2>{rows}
@@ -182,7 +223,7 @@ def invite():
 @app.route("/dashboard/<int:guild_id>", methods=["GET", "POST"])
 def dashboard(guild_id):
     if "user" not in session: return redirect("/")
-    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+    if not _can_access(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     if request.method == "POST":
@@ -279,7 +320,7 @@ def dashboard(guild_id):
 @app.route("/dashboard/<int:guild_id>/ratings")
 def ratings_page(guild_id):
     if "user" not in session: return redirect("/")
-    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+    if not _can_access(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     top = database.top_staff(guild_id)
@@ -290,7 +331,7 @@ def ratings_page(guild_id):
 
 def _section_form(guild_id, active, title, blurb, fields, commands):
     if "user" not in session: return redirect("/")
-    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+    if not _can_access(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     s = database.get_settings(guild_id)
@@ -310,149 +351,216 @@ def section_moderation(guild_id):
         [("staff_role_id", "Staff role"), ("log_channel_id", "Mod log channel"), ("autorole_id", "Auto-role for new members")],
         ["/kick", "/ban", "/banlist", "/timeout", "/untimeout", "/warn", "/warns", "/strike", "/strikes", "/purge", "/slowmode", "/lock", "/unlock", "/add-word", "/remove-word", "/word-list", "/set-autorole", "/set-log-channel"])
 
+def _guild_roles(guild_id):
+    """Roles in the server, from Discord (bot token, server-side only)."""
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        return []
+    try:
+        r = requests.get(f"{API}/guilds/{guild_id}/roles",
+                         headers={"Authorization": f"Bot {token}"}, timeout=10)
+        if not r.ok:
+            return []
+        roles = [x for x in r.json() if int(x["id"]) != int(guild_id)]  # skip @everyone
+        roles.sort(key=lambda x: x.get("position", 0), reverse=True)
+        return roles
+    except Exception:
+        return []
+
+def _role_checkboxes(guild_id, selected):
+    """Tick the roles that can see/work a ticket type. Falls back to a
+    text box of role IDs when Discord can't be reached."""
+    roles = _guild_roles(guild_id)
+    selected = set(selected or [])
+    if not roles:
+        return '<label>Role IDs that can see/work these tickets (comma-separated Discord IDs)<input name="role_ids_text" value="' + ",".join(str(x) for x in selected) + '" placeholder="e.g. 123456789, 987654321"></label>'
+    boxes = "".join(
+        f'<label style="display:block"><input type="checkbox" name="role_ids" value="{r["id"]}"{" checked" if int(r["id"]) in selected else ""}> {r["name"]}</label>'
+        for r in roles)
+    return '<label>Roles that can see/work these tickets</label>' + boxes + '<p class="muted">Leave all unticked to use the server staff role instead.</p>'
+
+def _parse_role_ids(form):
+    ids = []
+    for v in form.getlist("role_ids"):
+        try: ids.append(int(v))
+        except Exception: pass
+    if not ids:
+        for v in (form.get("role_ids_text") or "").replace(";", ",").split(","):
+            try: ids.append(int(v.strip()))
+            except Exception: pass
+    return ids or None
+
+def _parse_color(form, default=5793266):
+    v = (form.get("color") or "").strip()
+    if not v:
+        return default
+    try:
+        return int(v, 0)
+    except Exception:
+        return default
+
 @app.route("/dashboard/<int:guild_id>/tickets", methods=["GET", "POST"])
 def section_tickets(guild_id):
     if "user" not in session: return redirect("/")
-    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+    if not _can_access(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     s = database.get_settings(guild_id)
     msg = ""
+    def _id(v):
+        try: return int(v)
+        except Exception: return None
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "add_template":
-            name = (request.form.get("name") or "").strip()
-            if name:
-                def _id(v):
-                    try: return int(v)
-                    except Exception: return None
-                database.ensure_ticket_menus(guild_id)
-                database.add_ticket_template(guild_id, name,
-                    request.form.get("description") or "",
-                    _id(request.form.get("staff_role_id")),
-                    _id(request.form.get("panel_channel_id")),
-                    _id(request.form.get("category_id")),
-                    _id(request.form.get("menu_id")),
-                    (request.form.get("emoji") or "").strip() or None,
-                    (request.form.get("ticket_prefix") or "").strip() or None)
-                msg = f"<p>✅ Template '<b>{name}</b>' created.</p>"
-            else:
-                msg = "<p>⚠️ Give the template a name first.</p>"
-        elif action == "delete_template":
-            database.delete_ticket_template(int(request.form.get("template_id")), guild_id)
-            msg = "<p>✅ Template deleted.</p>"
-        elif action == "add_menu":
+        if action == "add_menu":
             title = (request.form.get("title") or "").strip()
             if title:
-                database.add_ticket_menu(guild_id, title, (request.form.get("placeholder") or "").strip())
-                msg = f"<p>✅ Menu '<b>{title}</b>' created — it shows up as its own dropdown on the panel.</p>"
+                database.ensure_ticket_menus(guild_id)
+                database.add_ticket_menu(guild_id, title, (request.form.get("placeholder") or "").strip(),
+                    questions=database.parse_question_lines(request.form.get("questions") or ""),
+                    ticket_prefix=(request.form.get("ticket_prefix") or "").strip() or None,
+                    emoji=(request.form.get("emoji") or "").strip() or None,
+                    category_id=_id(request.form.get("category_id")),
+                    role_ids=_parse_role_ids(request.form))
+                msg = f"<p>✅ Ticket type '<b>{title}</b>' created — it shows up in the panel dropdown.</p>"
             else:
-                msg = "<p>⚠️ Give the menu a title first.</p>"
-        elif action == "delete_menu":
-            database.delete_ticket_menu(int(request.form.get("menu_id")), guild_id)
-            msg = "<p>✅ Menu deleted (its templates moved back to the first menu).</p>"
+                msg = "<p>⚠️ Give the ticket type a name first.</p>"
         elif action == "edit_menu":
             title = (request.form.get("title") or "").strip()
             if title:
-                database.update_ticket_menu(int(request.form.get("menu_id")), guild_id, title, (request.form.get("placeholder") or "").strip())
-                msg = f"<p>✅ Menu updated to '<b>{title}</b>'.</p>"
+                database.update_ticket_menu(int(request.form.get("menu_id")), guild_id, title,
+                    (request.form.get("placeholder") or "").strip(),
+                    questions=database.parse_question_lines(request.form.get("questions") or ""),
+                    ticket_prefix=(request.form.get("ticket_prefix") or "").strip() or None,
+                    emoji=(request.form.get("emoji") or "").strip() or None,
+                    category_id=_id(request.form.get("category_id")),
+                    role_ids=_parse_role_ids(request.form))
+                msg = f"<p>✅ Ticket type '<b>{title}</b>' updated.</p>"
             else:
-                msg = "<p>⚠️ A menu needs a title.</p>"
-        elif action == "edit_template":
-            name = (request.form.get("name") or "").strip()
-            if name:
-                def _id(v):
-                    try: return int(v)
-                    except Exception: return None
-                database.update_ticket_template(int(request.form.get("template_id")), guild_id, name,
-                    request.form.get("description") or "",
-                    _id(request.form.get("menu_id")),
-                    (request.form.get("emoji") or "").strip() or None,
-                    (request.form.get("ticket_prefix") or "").strip() or None,
-                    _id(request.form.get("staff_role_id")),
-                    _id(request.form.get("panel_channel_id")),
-                    _id(request.form.get("category_id")))
-                msg = f"<p>✅ Option '<b>{name}</b>' updated.</p>"
+                msg = "<p>⚠️ A ticket type needs a name.</p>"
+        elif action == "delete_menu":
+            database.delete_ticket_menu(int(request.form.get("menu_id")), guild_id)
+            msg = "<p>✅ Ticket type deleted.</p>"
+        elif action == "add_panel":
+            title = (request.form.get("title") or "").strip() or "🎫 Need Help?"
+            ch = _id(request.form.get("channel_id"))
+            if ch:
+                mids = [int(x) for x in request.form.getlist("panel_menu_ids") if x.isdigit()]
+                database.add_ticket_panel(guild_id, title,
+                    (request.form.get("description") or "").strip(),
+                    _parse_color(request.form), ch, mids or None)
+                msg = f"<p>✅ Panel '<b>{title}</b>' created — hit <b>Post / update</b> to put it in Discord.</p>"
             else:
-                msg = "<p>⚠️ An option needs a name.</p>"
+                msg = "<p>⚠️ Pick the channel the panel goes in first.</p>"
+        elif action == "edit_panel":
+            title = (request.form.get("title") or "").strip() or "🎫 Need Help?"
+            ch = _id(request.form.get("channel_id"))
+            if ch:
+                mids = [int(x) for x in request.form.getlist("panel_menu_ids") if x.isdigit()]
+                database.update_ticket_panel(int(request.form.get("panel_id")), guild_id, title,
+                    (request.form.get("description") or "").strip(),
+                    _parse_color(request.form), ch, mids or None)
+                msg = f"<p>✅ Panel '<b>{title}</b>' updated — hit <b>Post / update</b> to push it to Discord.</p>"
+            else:
+                msg = "<p>⚠️ Pick the channel the panel goes in first.</p>"
+        elif action == "delete_panel":
+            database.delete_ticket_panel(int(request.form.get("panel_id")), guild_id)
+            msg = "<p>✅ Panel deleted.</p>"
         elif action == "post_panel":
-            msg = _post_ticket_panel(guild_id, s)
-    templates = database.list_ticket_templates(guild_id)
+            panel = database.get_ticket_panel(int(request.form.get("panel_id")), guild_id)
+            msg = _post_ticket_panel(panel, guild_id) if panel else "<p>⚠️ That panel doesn't exist.</p>"
     menus = database.ensure_ticket_menus(guild_id)
-    _panel_desc_default = "Need help? Open a ticket below and our staff team will help you.\n\n**How it works**\n• Pick a topic from the menu below\n• Describe your issue in the ticket\n• A staff member will claim it and help you\n\nWhen your ticket closes, you'll be asked to rate your support 1–5 ⭐."
-    menu_names = {m["id"]: m["title"] for m in menus}
-    def _menu_opts(selected=None):
-        return "".join([f'<option value="{m["id"]}"{" selected" if m["id"] == selected else ""}>{m["title"]}</option>' for m in menus])
+    panels = database.list_ticket_panels(guild_id)
+    roles = {int(r["id"]): r["name"] for r in _guild_roles(guild_id)}
+    def _role_names(ids):
+        if not ids:
+            return "server staff role"
+        return ", ".join(roles.get(i, str(i)) for i in ids)
+    _panel_desc_default = ("Need help? Open a ticket below and our staff team will help you.\n\n"
+        "**How it works**\n"
+        "• Pick a ticket type from the menu below\n"
+        "• Answer its questions, if it has any\n"
+        "• A staff member will claim it and help you\n\n"
+        "When your ticket closes, you'll be asked to rate your support 1–5 ⭐.")
     edit_menu_id = request.args.get("edit_menu")
-    edit_tpl_id = request.args.get("edit_template")
+    edit_panel_id = request.args.get("edit_panel")
+
+    # --- panels ---
+    prows = ""
+    for p in panels:
+        mids = database.panel_menu_ids(p)
+        mnames = ", ".join(m["title"] for m in menus if not mids or m["id"] in mids) or "All ticket types"
+        if edit_panel_id and str(p["id"]) == edit_panel_id:
+            checks = "".join(
+                f'<label style="display:block"><input type="checkbox" name="panel_menu_ids" value="{m["id"]}"{" checked" if (not mids or m["id"] in mids) else ""}> {m["title"]}</label>'
+                for m in menus)
+            prows += f"""<div class="card"><h3>✏️ Edit panel</h3>
+            <form method="post"><input type="hidden" name="action" value="edit_panel"><input type="hidden" name="panel_id" value="{p['id']}">
+            <label>Panel title<input name="title" value="{p.get('title') or ''}" maxlength="200"></label>
+            <label>Panel description<textarea name="description" rows="3">{p.get('description') or ''}</textarea></label>
+            <label>Panel color (hex, e.g. 0x5865F2)<input name="color" value="{hex(p.get('color') or 5793266)}" placeholder="0x5865F2"></label>
+            <label>Channel ID<input name="channel_id" value="{p.get('channel_id') or ''}" placeholder="Discord ID number"></label>
+            <label>Ticket types in this panel (untick all = every type)</label>{checks}
+            <button>Save changes</button> <a href="/dashboard/{guild_id}/tickets"><button type="button">Cancel</button></a></form></div>"""
+        else:
+            prows += f"""<div class="card"><h3>📌 {p.get('title') or 'Panel'}</h3>
+            <p>Channel: {p.get('channel_id') or '—'} • Types: {mnames}</p>
+            <form method="post" style="display:inline"><input type="hidden" name="action" value="post_panel"><input type="hidden" name="panel_id" value="{p['id']}"><button>📣 Post / update in Discord</button></form>
+            <a href="/dashboard/{guild_id}/tickets?edit_panel={p['id']}"><button type="button">✏️ Edit</button></a>
+            <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_panel"><input type="hidden" name="panel_id" value="{p['id']}"><button class="danger">Delete panel</button></form></div>"""
+    prows = prows or "<p>No panels yet — make one below, then post it.</p>"
+    pchecks = "".join(
+        f'<label style="display:block"><input type="checkbox" name="panel_menu_ids" value="{m["id"]}" checked> {m["title"]}</label>'
+        for m in menus)
+
+    # --- menus (ticket types) ---
     mrows = ""
     for m in menus:
+        qs = database.menu_questions(m)
+        rids = database.menu_role_ids(m)
         if edit_menu_id and str(m["id"]) == edit_menu_id:
-            mrows += f"""<div class="card"><h3>✏️ Edit menu</h3>
+            mrows += f"""<div class="card"><h3>✏️ Edit ticket type</h3>
             <form method="post"><input type="hidden" name="action" value="edit_menu"><input type="hidden" name="menu_id" value="{m['id']}">
-            <label>Menu title — this is the text on the dropdown button<input name="title" value="{m['title']}" maxlength="100"></label>
-            <label>Question — shown in the panel above the dropdown<input name="placeholder" value="{m.get('placeholder') or ''}" maxlength="150"></label>
+            <label>Name — shows in the panel dropdown<input name="title" value="{m['title']}" maxlength="100"></label>
+            <label>Description — the smaller grey text under the name<input name="placeholder" value="{m.get('placeholder') or ''}" maxlength="100"></label>
+            <label>Emoji (one emoji, e.g. 🎫)<input name="emoji" value="{m.get('emoji') or ''}" maxlength="10"></label>
+            <label>Ticket channel name (e.g. support, so channels are named support-username)<input name="ticket_prefix" value="{m.get('ticket_prefix') or ''}" maxlength="30"></label>
+            <label>Category ID (optional — where ticket channels go)<input name="category_id" value="{m.get('category_id') or ''}" placeholder="Discord ID number"></label>
+            <label>Questions — one per line: Question | short/long | required/optional (max 5, asked before the ticket opens)<textarea name="questions" rows="4">{database.format_question_lines(qs)}</textarea></label>
+            {_role_checkboxes(guild_id, rids)}
             <button>Save changes</button> <a href="/dashboard/{guild_id}/tickets"><button type="button">Cancel</button></a></form></div>"""
         else:
-            mrows += f"""<div class="card"><h3>⬇️ {m['title']}</h3>
-            <p class="muted">Question: {m.get('placeholder') or m['title']}</p>
-            <p>{sum(1 for t in templates if (t.get('menu_id') or menus[0]['id']) == m['id'])} option(s) in this menu</p>
+            mrows += f"""<div class="card"><h3>{m.get('emoji') or '🎫'} {m['title']}</h3>
+            <p>{m.get('placeholder') or 'No description.'}</p>
+            <p>Ticket name: <b>{m.get('ticket_prefix') or 'ticket-' + m['title'].lower().replace(' ', '-')}</b>-username • Questions: {len(qs)} • Roles: {_role_names(rids)} • Category: {m.get('category_id') or 'server default'}</p>
             <a href="/dashboard/{guild_id}/tickets?edit_menu={m['id']}"><button type="button">✏️ Edit</button></a>
-            <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_menu"><input type="hidden" name="menu_id" value="{m['id']}"><button class="danger">Delete menu</button></form></div>"""
-    rows = ""
-    for t in templates:
-        if edit_tpl_id and str(t["id"]) == edit_tpl_id:
-            rows += f"""<div class="card"><h3>✏️ Edit option</h3>
-            <form method="post"><input type="hidden" name="action" value="edit_template"><input type="hidden" name="template_id" value="{t['id']}">
-            <label>Option name — the big bold text in the dropdown<input name="name" value="{t['name']}" maxlength="100"></label>
-            <label>Menu<select name="menu_id">{_menu_opts(t.get('menu_id') or menus[0]['id'])}</select></label>
-            <label>Description — the smaller grey text under the name in the dropdown<input name="description" value="{t.get('description') or ''}" maxlength="100"></label>
-            <label>Emoji<input name="emoji" value="{t.get('emoji') or ''}" maxlength="10"></label>
-            <label>Ticket channel name<input name="ticket_prefix" value="{t.get('ticket_prefix') or ''}" maxlength="30"></label>
-            <label>Staff role ID<input name="staff_role_id" value="{t.get('staff_role_id') or ''}" placeholder="Discord ID number"></label>
-            <label>Panel channel ID<input name="panel_channel_id" value="{t.get('panel_channel_id') or ''}" placeholder="Discord ID number"></label>
-            <label>Category ID<input name="category_id" value="{t.get('category_id') or ''}" placeholder="Discord ID number"></label>
-            <button>Save changes</button> <a href="/dashboard/{guild_id}/tickets"><button type="button">Cancel</button></a></form></div>"""
-        else:
-            rows += f"""<div class="card"><h3>🎫 {t.get('emoji') or ''} {t['name']}</h3>
-            <p>{t.get('description') or 'No description.'}</p>
-            <p>Menu: {menu_names.get(t.get('menu_id') or menus[0]['id'], '—')} • Staff role: {t.get('staff_role_id') or 'server default'} • Panel channel: {t.get('panel_channel_id') or 'server default'} • Category: {t.get('category_id') or 'server default'} • Ticket name: {t.get('ticket_prefix') or 'ticket-...'}</p>
-            <a href="/dashboard/{guild_id}/tickets?edit_template={t['id']}"><button type="button">✏️ Edit</button></a>
-            <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button>Delete template</button></form></div>"""
-    rows = rows or "<p>No templates yet — members see the built-in topics (General Help, Report a Player, Bug Report, Billing, Appeal, Something Else) until you add one.</p>"
+            <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_menu"><input type="hidden" name="menu_id" value="{m['id']}"><button class="danger">Delete</button></form></div>"""
     body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>🎫 Tickets</h2>
-    <p>Ticket King style: your panel can have <b>more than one dropdown</b> — make a menu for each group (like "Support" and "Applications"), then add options to each menu. Every option can have its own emoji, staff role, category and ticket channel name. When a ticket closes, the owner rates it 1-5 ⭐.</p>
-    <form method="post"><input type="hidden" name="action" value="post_panel"><button>📣 Post / update the ticket panel in Discord</button></form>
-    <p>Posts the panel to the panel channel in your server settings (set it below). Run this after adding or deleting menus/templates.</p></div>
-    <div class="card"><h3>Panel look</h3>
-    <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/tickets">
-    <label>Panel title<input name="ticket_panel_title" value="{s.get('ticket_panel_title') or '🎫 Need Help?'}" maxlength="200"></label>
-    <label>Panel description<textarea name="ticket_panel_description" rows="3">{s.get('ticket_panel_description') or _panel_desc_default}</textarea></label>
-    <label>Panel color (hex, e.g. 0x5865F2)<input name="ticket_panel_color" value="{hex(s.get('ticket_panel_color') or 5793266)}" placeholder="0x5865F2"></label>
-    <button>Save panel look</button></form></div>
-    <div class="card"><h3>Your dropdown menus</h3>{mrows}</div>
-    <div class="card"><h3>＋ New menu</h3>
+    <p>One dropdown per panel, and its options are the <b>ticket types</b> below — like Support, Partnership or Report. Picking one opens a ticket named for that type (support-username, partnership-username...) and asks its questions first, if it has any. Only the roles you pick for that type can see and work its tickets. You can have <b>more than one panel</b> — put different types in different channels. When a ticket closes, the owner rates it 1-5 ⭐.</p></div>
+    <div class="card"><h3>Your panels</h3>{prows}</div>
+    <div class="card"><h3>＋ New panel</h3>
+    <form method="post"><input type="hidden" name="action" value="add_panel">
+    <label>Panel title<input name="title" placeholder="e.g. 🎫 Need Help?" maxlength="200"></label>
+    <label>Panel description<textarea name="description" rows="3">{_panel_desc_default}</textarea></label>
+    <label>Panel color (hex, e.g. 0x5865F2)<input name="color" value="0x5865F2" placeholder="0x5865F2"></label>
+    <label>Channel ID<input name="channel_id" placeholder="Discord ID number"></label>
+    <label>Ticket types in this panel (untick all = every type)</label>{pchecks}
+    <button>Create panel</button></form></div>
+    <div class="card"><h3>Your ticket types</h3>{mrows}</div>
+    <div class="card"><h3>＋ New ticket type</h3>
     <form method="post"><input type="hidden" name="action" value="add_menu">
-    <label>Menu title — this is the text on the dropdown button<input name="title" placeholder="e.g. Support" maxlength="100"></label>
-    <label>Question — shown in the panel above the dropdown<input name="placeholder" placeholder="e.g. What do you need help with? Pick one..." maxlength="150"></label>
-    <button>Create menu</button></form></div>
-    <div class="card"><h3>Your ticket options</h3>{rows}</div>
-    <div class="card"><h3>＋ New option</h3>
-    <form method="post"><input type="hidden" name="action" value="add_template">
-    <label>Option name — the big bold text in the dropdown<input name="name" placeholder="e.g. Report a Player" maxlength="100"></label>
-    <label>Menu<select name="menu_id">{_menu_opts()}</select></label>
-    <label>Description — the smaller grey text under the name in the dropdown<input name="description" placeholder="e.g. Report someone breaking the rules" maxlength="100"></label>
-    <label>Emoji (one emoji, e.g. 🚨)<input name="emoji" placeholder="🚨" maxlength="10"></label>
-    <label>Ticket channel name (optional — e.g. report, so channels are named report-username)<input name="ticket_prefix" placeholder="report" maxlength="30"></label>
-    <label>Staff role ID (optional — leave blank to use the server default)<input name="staff_role_id" placeholder="Discord ID number"></label>
-    <label>Panel channel ID (optional)<input name="panel_channel_id" placeholder="Discord ID number"></label>
+    <label>Name — shows in the panel dropdown<input name="title" placeholder="e.g. Partnership" maxlength="100"></label>
+    <label>Description — the smaller grey text under the name<input name="placeholder" placeholder="e.g. Partner with our server" maxlength="100"></label>
+    <label>Emoji (one emoji, e.g. 🤝)<input name="emoji" placeholder="🤝" maxlength="10"></label>
+    <label>Ticket channel name (e.g. partnership, so channels are named partnership-username)<input name="ticket_prefix" placeholder="partnership" maxlength="30"></label>
     <label>Category ID (optional — where ticket channels go)<input name="category_id" placeholder="Discord ID number"></label>
-    <button>Create option</button></form>
+    <label>Questions — one per line: Question | short/long | required/optional (max 5, asked before the ticket opens)<textarea name="questions" rows="4" placeholder="What is your server name? | short | required&#10;Why do you want to partner? | long | required"></textarea></label>
+    {_role_checkboxes(guild_id, [])}
+    <button>Create ticket type</button></form>
     <p>Enter Discord IDs (right-click a channel/role &gt; Copy ID, with Developer Mode on).</p></div>
     <div class="card"><h3>Server ticket settings</h3>
     <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/tickets">
     <label>Staff role ID <input name="staff_role_id" value="{s.get('staff_role_id') or ''}" placeholder="Discord ID number"></label>
-    <label>Panel channel ID <input name="panel_channel_id" value="{s.get('panel_channel_id') or ''}" placeholder="Discord ID number"></label>
     <label>Ticket category ID <input name="ticket_category_id" value="{s.get('ticket_category_id') or ''}" placeholder="Discord ID number"></label>
     <label>Rating log channel ID <input name="rating_log_channel_id" value="{s.get('rating_log_channel_id') or ''}" placeholder="Discord ID number"></label>
     <label>Ticket log channel ID <input name="ticket_log_channel_id" value="{s.get('ticket_log_channel_id') or ''}" placeholder="Discord ID number"></label>
@@ -460,73 +568,72 @@ def section_tickets(guild_id):
     <p><b>Used in Discord:</b> /setup-tickets • /close • /claim • /add • /remove • /ratings • /leaderboard • /recent-ratings</p></div>"""
     return _render(body, guild_id=guild_id, active="tickets")
 
-def _post_ticket_panel(guild_id, s):
-    """Post the ticket panel straight from the dashboard, using the bot token (server-side only).
-    One dropdown per menu (slot 1 keeps the historic custom_id so panels
-    already posted keep working). Discord allows 5 dropdowns per message,
-    so more than 5 menus go out as extra panel messages — no limit on
-    how many menus a server can have."""
+def _post_ticket_panel(panel, guild_id):
+    """Post (or update in place) one ticket panel, using the bot token
+    (server-side only). One dropdown, whose options are the panel's
+    ticket types."""
+    if not panel:
+        return "<p>⚠️ That panel doesn't exist.</p>"
     token = os.getenv("DISCORD_TOKEN")
-    panel_channel = s.get("panel_channel_id")
+    channel_id = panel.get("channel_id")
     if not token:
         return "<p>⚠️ Bot token isn't set on the host, so the panel can't be posted from here — use /setup-tickets in Discord instead.</p>"
-    if not panel_channel:
-        return "<p>⚠️ Set the panel channel ID below first, then post the panel.</p>"
+    if not channel_id:
+        return "<p>⚠️ Set the panel's channel first, then post it.</p>"
     menus = database.ensure_ticket_menus(guild_id)
-    templates = database.list_ticket_templates(guild_id)
-    by_menu = {}
-    for t in templates:
-        by_menu.setdefault(t.get("menu_id") or menus[0]["id"], []).append(t)
-    title = s.get("ticket_panel_title") or "🎫 Need Help?"
-    desc = s.get("ticket_panel_description") or "Need help? Open a ticket below and our staff team will help you.\n\n**How it works**\n• Pick a topic from the menu below\n• Describe your issue in the ticket\n• A staff member will claim it and help you\n\nWhen your ticket closes, you'll be asked to rate your support 1–5 ⭐."
-    color = s.get("ticket_panel_color") or 5793266
-    # Menus with no options are skipped (the starter options are real
-    # templates now, so deleting them all just leaves that menu out).
-    nonempty = [m for m in menus if by_menu.get(m["id"])]
-    pages = [nonempty[i:i + 5] for i in range(0, len(nonempty), 5)] or [[]]
-    posted = 0
-    for pi, page_menus in enumerate(pages):
-        components = []
-        for m in page_menus:
-            i = menus.index(m) + 1
-            opts = []
-            for t in by_menu.get(m["id"], []):
-                o = {"label": t["name"][:100], "value": f"tpl_{t['id']}", "description": (t.get("description") or "")[:100]}
-                if t.get("emoji") and len(t["emoji"]) <= 4:
-                    o["emoji"] = {"name": t["emoji"]}
-                opts.append(o)
-            if not opts:
-                continue
-            custom_id = "ticket_topic_select" if i == 1 else f"ticket_menu_{i}"
-            # The dropdown button shows the menu NAME; the question text
-            # lives in the panel embed above it, not on the button.
-            components.append({"type": 1, "components": [{"type": 3, "custom_id": custom_id,
-                "placeholder": m["title"][:100], "options": opts}]})
-        page_title = title if pi == 0 else f"{title} (continued)"
-        page_desc = desc
-        qlines = [f"**{m['title']}** — {m['placeholder']}" for m in page_menus
-                  if m.get("placeholder") and m["placeholder"].strip() and m["placeholder"].strip() != m["title"]]
-        if qlines:
-            page_desc = desc + "\n\n" + "\n".join(qlines)
-        payload = {"embeds": [{"title": page_title, "description": page_desc, "color": color, "footer": {"text": "Sunny's Best Friend • Ticket System"}}]}
-        if components:
-            payload["components"] = components
+    wanted = database.panel_menu_ids(panel)
+    if wanted:
+        menus = [m for m in menus if m["id"] in wanted]
+    options = []
+    for m in menus:
+        o = {"label": m["title"][:100], "value": f"menu_{m['id']}", "description": (m.get("placeholder") or "")[:100]}
+        if m.get("emoji") and len(m["emoji"]) <= 4:
+            o["emoji"] = {"name": m["emoji"]}
+        options.append(o)
+    if not options:
+        return "<p>⚠️ This panel has no ticket types in it — add one first.</p>"
+    title = panel.get("title") or "🎫 Need Help?"
+    desc = panel.get("description") or ("Need help? Open a ticket below and our staff team will help you.\n\n"
+        "**How it works**\n"
+        "• Pick a ticket type from the menu below\n"
+        "• Answer its questions, if it has any\n"
+        "• A staff member will claim it and help you\n\n"
+        "When your ticket closes, you'll be asked to rate your support 1–5 ⭐.")
+    color = panel.get("color") or 5793266
+    payload = {"embeds": [{"title": title, "description": desc, "color": color,
+                           "footer": {"text": "Sunny's Best Friend • Ticket System"}}],
+               "components": [{"type": 1, "components": [{"type": 3, "custom_id": "ticket_panel_select",
+                               "placeholder": (title or "Pick a ticket type...")[:100], "options": options}]}]}
+    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+    if panel.get("message_id"):
         try:
-            r = requests.post(f"{API}/channels/{panel_channel}/messages",
-                headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=10)
-        except Exception as e:
-            return f"<p>⚠️ Couldn't post the panel: {e}</p>"
-        if not r.ok:
-            return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
-        posted += 1
-    return f"<p>✅ Ticket panel posted in Discord ({posted} message{'s' if posted > 1 else ''} for {len(nonempty)} menu{'s' if len(nonempty) > 1 else ''}).</p>"
+            r = requests.patch(f"{API}/channels/{channel_id}/messages/{panel['message_id']}",
+                               headers=headers, json=payload, timeout=10)
+            if r.ok:
+                return "<p>✅ Panel updated in Discord.</p>"
+        except Exception:
+            pass  # message was deleted — fall through and post a fresh one
+    try:
+        r = requests.post(f"{API}/channels/{channel_id}/messages",
+                          headers=headers, json=payload, timeout=10)
+    except Exception as e:
+        return f"<p>⚠️ Couldn't post the panel: {e}</p>"
+    if not r.ok:
+        return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
+    msg_id = (r.json() or {}).get("id")
+    if msg_id:
+        try:
+            database.update_ticket_panel(panel["id"], guild_id, panel.get("title"), panel.get("description"),
+                                         panel.get("color"), panel.get("channel_id"),
+                                         database.panel_menu_ids(panel) or None, message_id=int(msg_id))
+        except Exception:
+            pass
+    return "<p>✅ Ticket panel posted in Discord.</p>"
 
 @app.route("/dashboard/<int:guild_id>/applications", methods=["GET", "POST"])
 def section_applications(guild_id):
     if "user" not in session: return redirect("/")
-    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+    if not _can_access(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     s = database.get_settings(guild_id)
@@ -710,7 +817,7 @@ def _post_application_panel(guild_id, s):
 @app.route("/dashboard/<int:guild_id>/messages", methods=["GET", "POST"])
 def section_messages(guild_id):
     if "user" not in session: return redirect("/")
-    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+    if not _can_access(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     s = database.get_settings(guild_id)
@@ -807,7 +914,7 @@ def section_messages(guild_id):
 @app.route("/dashboard/<int:guild_id>/community", methods=["GET", "POST"])
 def section_community(guild_id):
     if "user" not in session: return redirect("/")
-    if not any(int(g["id"]) == guild_id for g in session.get("guilds", [])):
+    if not _can_access(guild_id):
         return "You don't manage that server, or the bot isn't in it.", 403
     database.init_db()
     s = database.get_settings(guild_id)
