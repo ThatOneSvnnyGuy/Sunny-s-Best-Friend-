@@ -210,9 +210,16 @@ def dashboard(guild_id):
                 except Exception:
                     pass
             return redirect(f"/dashboard/{guild_id}?announced=1")
-        for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id", "autorole_id", "log_channel_id", "panel_channel_id", "ticket_log_channel_id", "app_channel_id", "app_role_id"]:
+        for key in ["faith_channel_id", "rating_log_channel_id", "welcome_channel_id", "starboard_channel_id", "ticket_category_id", "staff_role_id", "autorole_id", "log_channel_id", "panel_channel_id", "ticket_log_channel_id", "app_channel_id", "app_role_id", "app_panel_channel_id"]:
             v = request.form.get(key)
             if v: database.set_setting(guild_id, key, int(v))
+        for key in ["ticket_panel_title", "ticket_panel_description"]:
+            v = (request.form.get(key) or "").strip()
+            if v: database.set_setting(guild_id, key, v[:200])
+        v = (request.form.get("ticket_panel_color") or "").strip()
+        if v:
+            try: database.set_setting(guild_id, "ticket_panel_color", int(v, 0))
+            except Exception: pass
         p = (request.form.get("prefix") or "").strip()
         if p and len(p) <= 3 and not any(c.isspace() for c in p):
             database.set_setting(guild_id, "prefix", p)
@@ -319,37 +326,74 @@ def section_tickets(guild_id):
                 def _id(v):
                     try: return int(v)
                     except Exception: return None
+                database.ensure_ticket_menus(guild_id)
                 database.add_ticket_template(guild_id, name,
                     request.form.get("description") or "",
                     _id(request.form.get("staff_role_id")),
                     _id(request.form.get("panel_channel_id")),
-                    _id(request.form.get("category_id")))
+                    _id(request.form.get("category_id")),
+                    _id(request.form.get("menu_id")),
+                    (request.form.get("emoji") or "").strip() or None,
+                    (request.form.get("ticket_prefix") or "").strip() or None)
                 msg = f"<p>✅ Template '<b>{name}</b>' created.</p>"
             else:
                 msg = "<p>⚠️ Give the template a name first.</p>"
         elif action == "delete_template":
             database.delete_ticket_template(int(request.form.get("template_id")), guild_id)
             msg = "<p>✅ Template deleted.</p>"
+        elif action == "add_menu":
+            title = (request.form.get("title") or "").strip()
+            if title:
+                database.add_ticket_menu(guild_id, title, (request.form.get("placeholder") or "").strip())
+                msg = f"<p>✅ Menu '<b>{title}</b>' created — it shows up as its own dropdown on the panel.</p>"
+            else:
+                msg = "<p>⚠️ Give the menu a title first.</p>"
+        elif action == "delete_menu":
+            database.delete_ticket_menu(int(request.form.get("menu_id")), guild_id)
+            msg = "<p>✅ Menu deleted (its templates moved back to the first menu).</p>"
         elif action == "post_panel":
             msg = _post_ticket_panel(guild_id, s)
     templates = database.list_ticket_templates(guild_id)
-    rows = "".join([f"""<div class="card"><h3>🎫 {t['name']}</h3>
+    menus = database.ensure_ticket_menus(guild_id)
+    _panel_desc_default = "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards."
+    menu_names = {m["id"]: m["title"] for m in menus}
+    menu_opts = "".join([f'<option value="{m["id"]}">{m["title"]}</option>' for m in menus])
+    mrows = "".join([f"""<div class="card"><h3>⬇️ {m['title']}</h3>
+        <p class="muted">Placeholder: {m.get('placeholder') or m['title']}</p>
+        <p>{sum(1 for t in templates if (t.get('menu_id') or menus[0]['id']) == m['id'])} option(s) in this menu</p>
+        <form method="post"><input type="hidden" name="action" value="delete_menu"><input type="hidden" name="menu_id" value="{m['id']}"><button class="danger">Delete menu</button></form></div>""" for m in menus])
+    rows = "".join([f"""<div class="card"><h3>🎫 {t.get('emoji') or ''} {t['name']}</h3>
         <p>{t.get('description') or 'No description.'}</p>
-        <p>Staff role: {t.get('staff_role_id') or 'server default'} • Panel channel: {t.get('panel_channel_id') or 'server default'} • Category: {t.get('category_id') or 'server default'}</p>
+        <p>Menu: {menu_names.get(t.get('menu_id') or menus[0]['id'], '—')} • Staff role: {t.get('staff_role_id') or 'server default'} • Panel channel: {t.get('panel_channel_id') or 'server default'} • Category: {t.get('category_id') or 'server default'} • Ticket name: {t.get('ticket_prefix') or 'ticket-...'}</p>
         <form method="post"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button>Delete template</button></form></div>""" for t in templates]) or "<p>No templates yet — members see the built-in topics (General Help, Report a Player, Bug Report, Billing, Appeal, Something Else) until you add one.</p>"
     body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>🎫 Tickets</h2>
-    <p>Make ticket templates here and they show up as the dropdown on your ticket panel — no Discord command needed. Each template can have its own staff role, panel channel and category. When a ticket closes, the owner rates it 1-5 ⭐.</p>
+    <p>Ticket King style: your panel can have <b>more than one dropdown</b> — make a menu for each group (like "Support" and "Applications"), then add options to each menu. Every option can have its own emoji, staff role, category and ticket channel name. When a ticket closes, the owner rates it 1-5 ⭐.</p>
     <form method="post"><input type="hidden" name="action" value="post_panel"><button>📣 Post / update the ticket panel in Discord</button></form>
-    <p>Posts the panel to the panel channel in your server settings (set it below). Run this after adding or deleting templates.</p></div>
-    <div class="card"><h3>Your ticket templates</h3>{rows}</div>
-    <div class="card"><h3>＋ New template</h3>
+    <p>Posts the panel to the panel channel in your server settings (set it below). Run this after adding or deleting menus/templates.</p></div>
+    <div class="card"><h3>Panel look</h3>
+    <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/tickets">
+    <label>Panel title<input name="ticket_panel_title" value="{s.get('ticket_panel_title') or '🎫 Need Help?'}" maxlength="200"></label>
+    <label>Panel description<textarea name="ticket_panel_description" rows="3">{s.get('ticket_panel_description') or _panel_desc_default}</textarea></label>
+    <label>Panel color (hex, e.g. 0x5865F2)<input name="ticket_panel_color" value="{hex(s.get('ticket_panel_color') or 5793266)}" placeholder="0x5865F2"></label>
+    <button>Save panel look</button></form></div>
+    <div class="card"><h3>Your dropdown menus</h3>{mrows}</div>
+    <div class="card"><h3>＋ New menu</h3>
+    <form method="post"><input type="hidden" name="action" value="add_menu">
+    <label>Menu title (shows above the dropdown)<input name="title" placeholder="e.g. Support" maxlength="100"></label>
+    <label>Placeholder text inside the dropdown<input name="placeholder" placeholder="e.g. What do you need help with? Pick one..." maxlength="150"></label>
+    <button>Create menu</button></form></div>
+    <div class="card"><h3>Your ticket options</h3>{rows}</div>
+    <div class="card"><h3>＋ New option</h3>
     <form method="post"><input type="hidden" name="action" value="add_template">
-    <label>Template name (shows in the dropdown)<input name="name" placeholder="e.g. Report a Player" maxlength="100"></label>
+    <label>Option name (shows in the dropdown)<input name="name" placeholder="e.g. Report a Player" maxlength="100"></label>
+    <label>Menu<select name="menu_id">{menu_opts}</select></label>
     <label>Description<input name="description" placeholder="e.g. Report someone breaking the rules" maxlength="100"></label>
+    <label>Emoji (one emoji, e.g. 🚨)<input name="emoji" placeholder="🚨" maxlength="10"></label>
+    <label>Ticket channel name (optional — e.g. report, so channels are named report-username)<input name="ticket_prefix" placeholder="report" maxlength="30"></label>
     <label>Staff role ID (optional — leave blank to use the server default)<input name="staff_role_id" placeholder="Discord ID number"></label>
     <label>Panel channel ID (optional)<input name="panel_channel_id" placeholder="Discord ID number"></label>
     <label>Category ID (optional — where ticket channels go)<input name="category_id" placeholder="Discord ID number"></label>
-    <button>Create template</button></form>
+    <button>Create option</button></form>
     <p>Enter Discord IDs (right-click a channel/role &gt; Copy ID, with Developer Mode on).</p></div>
     <div class="card"><h3>Server ticket settings</h3>
     <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/tickets">
@@ -363,28 +407,49 @@ def section_tickets(guild_id):
     return _render(body, guild_id=guild_id, active="tickets")
 
 def _post_ticket_panel(guild_id, s):
-    """Post the ticket panel straight from the dashboard, using the bot token (server-side only)."""
+    """Post the ticket panel straight from the dashboard, using the bot token (server-side only).
+    One dropdown per menu (slot 1 keeps the historic custom_id so panels
+    already posted keep working)."""
     token = os.getenv("DISCORD_TOKEN")
     panel_channel = s.get("panel_channel_id")
     if not token:
         return "<p>⚠️ Bot token isn't set on the host, so the panel can't be posted from here — use /setup-tickets in Discord instead.</p>"
     if not panel_channel:
         return "<p>⚠️ Set the panel channel ID below first, then post the panel.</p>"
+    menus = database.ensure_ticket_menus(guild_id)
     templates = database.list_ticket_templates(guild_id)
-    if templates:
-        options = [{"label": t["name"][:100], "value": f"tpl_{t['id']}", "description": (t.get("description") or "")[:100]} for t in templates]
-    else:
-        options = [{"label": "💬 General Help", "value": "general", "description": "I need help with something"},
-                   {"label": "🚨 Report a Player", "value": "report", "description": "Report someone breaking the rules"},
-                   {"label": "🐛 Bug Report", "value": "bug", "description": "Something in the server / bot is broken"},
-                   {"label": "💳 Billing / Purchase", "value": "billing", "description": "Help with a purchase, order or payment"},
-                   {"label": "⚖️ Appeal a Punishment", "value": "appeal", "description": "Appeal a ban, timeout or warning"},
-                   {"label": "✨ Something Else", "value": "other", "description": "Anything that doesn't fit above"}]
+    by_menu = {}
+    for t in templates:
+        by_menu.setdefault(t.get("menu_id") or menus[0]["id"], []).append(t)
+    builtin = [{"label": "💬 General Help", "value": "general", "description": "I need help with something"},
+               {"label": "🚨 Report a Player", "value": "report", "description": "Report someone breaking the rules"},
+               {"label": "🐛 Bug Report", "value": "bug", "description": "Something in the server / bot is broken"},
+               {"label": "💳 Billing / Purchase", "value": "billing", "description": "Help with a purchase, order or payment"},
+               {"label": "⚖️ Appeal a Punishment", "value": "appeal", "description": "Appeal a ban, timeout or warning"},
+               {"label": "✨ Something Else", "value": "other", "description": "Anything that doesn't fit above"}]
+    components = []
+    for i, m in enumerate(menus[:4], start=1):
+        opts = []
+        for t in by_menu.get(m["id"], []):
+            o = {"label": t["name"][:100], "value": f"tpl_{t['id']}", "description": (t.get("description") or "")[:100]}
+            if t.get("emoji") and len(t["emoji"]) <= 4:
+                o["emoji"] = {"name": t["emoji"]}
+            opts.append(o)
+        if i == 1 and not opts:
+            opts = builtin
+        if not opts:
+            opts = [{"label": "—", "value": "none", "description": "No options in this menu yet"}]
+        custom_id = "ticket_topic_select" if i == 1 else f"ticket_menu_{i}"
+        components.append({"type": 1, "components": [{"type": 3, "custom_id": custom_id,
+            "placeholder": (m.get("placeholder") or m["title"])[:150], "options": opts}]})
+    title = s.get("ticket_panel_title") or "🎫 Need Help?"
+    desc = s.get("ticket_panel_description") or "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards."
+    color = s.get("ticket_panel_color") or 5793266
     try:
         r = requests.post(f"{API}/channels/{panel_channel}/messages",
             headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
-            json={"embeds": [{"title": "🎫 Need Help?", "description": "Pick what you need help with from the menu below to open a support ticket.\n\nWhen your ticket closes, you'll rate your support 1-5 ⭐ - that rating counts toward staff leaderboards.", "color": 5793266}],
-                  "components": [{"type": 1, "components": [{"type": 3, "custom_id": "ticket_topic_select", "placeholder": "What do you need help with? Pick one...", "options": options}]}]},
+            json={"embeds": [{"title": title, "description": desc, "color": color}],
+                  "components": components},
             timeout=10)
     except Exception as e:
         return f"<p>⚠️ Couldn't post the panel: {e}</p>"
@@ -418,17 +483,27 @@ def section_applications(guild_id):
                                "required": not (len(parts) > 2 and parts[2].lower().startswith("opt")),
                                "max_length": 500 if len(parts) > 1 and parts[1].lower().startswith("long") else 200})
                 import json as _json
+                def _color(v):
+                    try: return int(v, 0)
+                    except Exception: return None
+                def _days(v):
+                    try: return int(v)
+                    except Exception: return None
                 database.add_application_template(guild_id, name,
                     request.form.get("description") or "",
                     _id(request.form.get("role_id")),
                     _id(request.form.get("review_channel_id")),
-                    _json.dumps(qs[:5]))
+                    _json.dumps(qs[:5]),
+                    _color(request.form.get("color")),
+                    _days(request.form.get("cooldown_days")))
                 msg = f"<p>✅ Template '<b>{name}</b>' created with {len(qs[:5])} question(s).</p>"
             else:
                 msg = "<p>⚠️ Give the template a name first.</p>"
         elif action == "delete_template":
             database.delete_application_template(int(request.form.get("template_id")), guild_id)
             msg = "<p>✅ Template deleted.</p>"
+        elif action == "post_panel":
+            msg = _post_application_panel(guild_id, s)
         elif action == "decide":
             app_id = int(request.form.get("app_id"))
             approve = request.form.get("decision") == "approve"
@@ -458,7 +533,7 @@ def section_applications(guild_id):
         except Exception: qs = []
         qlist = "".join([f"<div class='rowline'><span>{q.get('label')}</span><span class='muted'>{'long answer' if q.get('style') == 'paragraph' else 'short answer'}{' • optional' if not q.get('required') else ''}</span></div>" for q in qs]) or "<p class='muted'>Built-in staff questions.</p>"
         trows += f"""<div class="card"><h3>📝 {t['name']}</h3><p class="muted">{t.get('description') or ''}</p>
-        <p>Role on approval: {t.get('role_id') or 'server default'} • Review channel: {t.get('review_channel_id') or 'server default'}</p>{qlist}
+        <p>Role on approval: {t.get('role_id') or 'server default'} • Review channel: {t.get('review_channel_id') or 'server default'} • Cooldown: {t.get('cooldown_days') or 'none'} day(s) • Color: {hex(t.get('color')) if t.get('color') else 'default'}</p>{qlist}
         <form method="post"><input type="hidden" name="action" value="delete_template"><input type="hidden" name="template_id" value="{t['id']}"><button class="danger">Delete template</button></form></div>"""
     pending = database.list_applications(guild_id, "pending")
     prows = ""
@@ -470,7 +545,9 @@ def section_applications(guild_id):
         <form method="post" style="display:inline"><input type="hidden" name="action" value="decide"><input type="hidden" name="app_id" value="{a['id']}"><input type="hidden" name="decision" value="approve"><button>✅ Approve</button></form>
         <form method="post" style="display:inline"><input type="hidden" name="action" value="decide"><input type="hidden" name="app_id" value="{a['id']}"><input type="hidden" name="decision" value="deny"><button class="danger">❌ Deny</button></form></div>"""
     body = f"""<div class="card"><a href="/dashboard/{guild_id}">← Overview</a>{msg}<h2>📝 Applications</h2>
-    <p>Build application forms here — each template is its own application (Staff, Moderator, Event Team...), with its own questions, its own role on approval, and its own review channel. In Discord, /apply lets members pick which one to fill in. You can approve or deny pending applications right here too.</p></div>
+    <p>Build application forms here — each template is its own application (Staff, Moderator, Event Team...), with its own questions, its own role on approval, its own review channel, its own color, and a cooldown so people can't spam applications. Post an application panel and members pick what to apply for from a dropdown, just like tickets. You can approve or deny pending applications right here too.</p>
+    <form method="post"><input type="hidden" name="action" value="post_panel"><button>📣 Post / update the application panel in Discord</button></form>
+    <p>Posts a panel with a dropdown of your application types to the panel channel in Server defaults below.</p></div>
     <div class="card"><h3>⏳ Waiting for review ({len(pending)})</h3>{prows or "<p class='muted'>No pending applications.</p>"}</div>
     <h3>Your application templates</h3>{trows or "<p class='muted'>No templates yet — members use the built-in staff form until you make one.</p>"}
     <div class="card"><h3>＋ New template</h3>
@@ -481,14 +558,41 @@ def section_applications(guild_id):
     <p class="muted">Max 5 questions (Discord's limit). Leave the questions box empty to use the built-in staff questions.</p>
     <label>Role ID given on approval (optional)<input name="role_id" placeholder="Discord ID number"></label>
     <label>Review channel ID (optional — where applications go)<input name="review_channel_id" placeholder="Discord ID number"></label>
+    <label>Embed color (hex, e.g. 0x5865F2)<input name="color" placeholder="0x5865F2"></label>
+    <label>Cooldown in days (optional — how long before someone can apply for this again)<input name="cooldown_days" placeholder="e.g. 7"></label>
     <button>Create template</button></form></div>
     <div class="card"><h3>Server defaults</h3>
     <form method="post" action="/dashboard/{guild_id}"><input type="hidden" name="next" value="/dashboard/{guild_id}/applications">
     <label>Application channel ID <input name="app_channel_id" value="{s.get('app_channel_id') or ''}" placeholder="Discord ID number"></label>
+    <label>Application panel channel ID <input name="app_panel_channel_id" value="{s.get('app_panel_channel_id') or ''}" placeholder="Discord ID number"></label>
     <label>Role given on approval <input name="app_role_id" value="{s.get('app_role_id') or ''}" placeholder="Discord ID number"></label>
     <button>Save defaults</button></form>
     <p><b>Used in Discord:</b> /setup-applications • /apply • /applications</p></div>"""
     return _render(body, guild_id=guild_id, active="applications")
+
+def _post_application_panel(guild_id, s):
+    """Post the application panel straight from the dashboard, using the bot token (server-side only)."""
+    token = os.getenv("DISCORD_TOKEN")
+    panel_channel = s.get("app_panel_channel_id") or s.get("app_channel_id")
+    if not token:
+        return "<p>⚠️ Bot token isn't set on the host, so the panel can't be posted from here.</p>"
+    if not panel_channel:
+        return "<p>⚠️ Set the application panel channel ID in Server defaults below first, then post the panel.</p>"
+    templates = database.list_application_templates(guild_id)
+    if not templates:
+        return "<p>⚠️ Make an application template first, then post the panel.</p>"
+    options = [{"label": t["name"][:100], "value": str(t["id"]), "description": (t.get("description") or "")[:100]} for t in templates]
+    try:
+        r = requests.post(f"{API}/channels/{panel_channel}/messages",
+            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+            json={"embeds": [{"title": "📝 Applications", "description": "Want to join the team? Pick what you're applying for from the menu below and fill in the form.", "color": 5793266}],
+                  "components": [{"type": 1, "components": [{"type": 3, "custom_id": "apply_template_select", "placeholder": "What are you applying for?", "options": options}]}]},
+            timeout=10)
+    except Exception as e:
+        return f"<p>⚠️ Couldn't post the panel: {e}</p>"
+    if r.ok:
+        return "<p>✅ Application panel posted in Discord.</p>"
+    return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
 
 @app.route("/dashboard/<int:guild_id>/messages", methods=["GET", "POST"])
 def section_messages(guild_id):

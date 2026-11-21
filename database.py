@@ -77,6 +77,13 @@ def init_db():
         guild_id INTEGER, user_id INTEGER,
         answers TEXT, status TEXT DEFAULT 'pending', created_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS ticket_menus (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER,
+        title TEXT,
+        placeholder TEXT,
+        position INTEGER DEFAULT 1
+    );
     CREATE TABLE IF NOT EXISTS ticket_templates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER,
@@ -124,9 +131,14 @@ def init_db():
     c.commit()
     try: cur.execute("ALTER TABLE applications ADD COLUMN template_id INTEGER")
     except Exception: pass
+    for _t, _c in [("ticket_templates", "menu_id INTEGER"), ("ticket_templates", "emoji TEXT"),
+                  ("ticket_templates", "ticket_prefix TEXT"), ("application_templates", "color INTEGER"),
+                  ("application_templates", "cooldown_days INTEGER")]:
+        try: cur.execute(f"ALTER TABLE {_t} ADD COLUMN {_c}")
+        except Exception: pass
     c.commit()
     # Migrations for older bot.db files (new columns)
-    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_verse_role_id INTEGER", "faith_prayer_role_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT"]:
+    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_verse_role_id INTEGER", "faith_prayer_role_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "app_panel_channel_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT", "ticket_panel_title TEXT", "ticket_panel_description TEXT", "ticket_panel_color INTEGER"]:
         try: cur.execute(f"ALTER TABLE settings ADD COLUMN {col}")
         except Exception: pass
     c.commit(); c.close()
@@ -294,6 +306,13 @@ def set_application_status(app_id, status):
     cur.execute("UPDATE applications SET status=? WHERE id=? AND status='pending'", (status, app_id))
     ok = cur.rowcount > 0; c.commit(); c.close(); return ok
 
+def last_application_time(guild_id, user_id, template_id):
+    """Unix time of this user's most recent application for this template (0 = never)."""
+    c=_conn(); cur=c.cursor()
+    r = cur.execute("SELECT MAX(created_at) FROM applications WHERE guild_id=? AND user_id=? AND template_id=?",
+                    (guild_id, user_id, template_id)).fetchone()
+    c.close(); return r[0] or 0
+
 # --- message counts (/messages) ---
 # One row per user per day (UTC). Counting starts when the bot is
 # running and sees a message - it cannot count messages sent before
@@ -433,10 +452,41 @@ def recent_tickets(guild_id, limit=5):
     c.close()
     return [{"channel_id": r["channel_id"], "owner_id": r["owner_id"], "status": r["status"]} for r in rows]
 
-def add_ticket_template(guild_id, name, description="", staff_role_id=None, panel_channel_id=None, category_id=None):
+def add_ticket_menu(guild_id, title, placeholder=""):
     c = _conn(); cur = c.cursor()
-    cur.execute("INSERT INTO ticket_templates (guild_id, name, description, staff_role_id, panel_channel_id, category_id) VALUES (?,?,?,?,?,?)",
-                (guild_id, name, description, staff_role_id, panel_channel_id, category_id))
+    pos = cur.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM ticket_menus WHERE guild_id=?", (guild_id,)).fetchone()[0]
+    cur.execute("INSERT INTO ticket_menus (guild_id, title, placeholder, position) VALUES (?,?,?,?)",
+                (guild_id, title, placeholder, pos))
+    c.commit(); mid = cur.lastrowid; c.close(); return mid
+
+def list_ticket_menus(guild_id):
+    c = _conn(); cur = c.cursor()
+    rows = cur.execute("SELECT * FROM ticket_menus WHERE guild_id=? ORDER BY position, id", (guild_id,)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def delete_ticket_menu(menu_id, guild_id):
+    c = _conn(); cur = c.cursor()
+    cur.execute("DELETE FROM ticket_menus WHERE id=? AND guild_id=?", (menu_id, guild_id))
+    cur.execute("UPDATE ticket_templates SET menu_id=NULL WHERE menu_id=? AND guild_id=?", (menu_id, guild_id))
+    c.commit(); c.close()
+
+def ensure_ticket_menus(guild_id):
+    """Every template belongs to a menu. Templates made before menus
+    existed get moved into a default first menu automatically."""
+    menus = list_ticket_menus(guild_id)
+    if not menus:
+        mid = add_ticket_menu(guild_id, "What do you need help with?", "What do you need help with? Pick one...")
+        menus = list_ticket_menus(guild_id)
+    first = menus[0]["id"]
+    c = _conn(); cur = c.cursor()
+    cur.execute("UPDATE ticket_templates SET menu_id=? WHERE guild_id=? AND menu_id IS NULL", (first, guild_id))
+    c.commit(); c.close()
+    return list_ticket_menus(guild_id)
+
+def add_ticket_template(guild_id, name, description="", staff_role_id=None, panel_channel_id=None, category_id=None, menu_id=None, emoji=None, ticket_prefix=None):
+    c = _conn(); cur = c.cursor()
+    cur.execute("INSERT INTO ticket_templates (guild_id, name, description, staff_role_id, panel_channel_id, category_id, menu_id, emoji, ticket_prefix) VALUES (?,?,?,?,?,?,?,?,?)",
+                (guild_id, name, description, staff_role_id, panel_channel_id, category_id, menu_id, emoji, ticket_prefix))
     c.commit(); tid = cur.lastrowid; c.close(); return tid
 
 def list_ticket_templates(guild_id):
@@ -459,10 +509,10 @@ def count_warns(guild_id, user_id):
     cur.execute("SELECT COUNT(*) FROM warns WHERE guild_id=? AND user_id=?", (guild_id, user_id))
     n = cur.fetchone()[0]; c.close(); return n
 
-def add_application_template(guild_id, name, description="", role_id=None, review_channel_id=None, questions="[]"):
+def add_application_template(guild_id, name, description="", role_id=None, review_channel_id=None, questions="[]", color=None, cooldown_days=None):
     c = _conn(); cur = c.cursor()
-    cur.execute("INSERT INTO application_templates (guild_id, name, description, role_id, review_channel_id, questions) VALUES (?,?,?,?,?,?)",
-                (guild_id, name, description, role_id, review_channel_id, questions))
+    cur.execute("INSERT INTO application_templates (guild_id, name, description, role_id, review_channel_id, questions, color, cooldown_days) VALUES (?,?,?,?,?,?,?,?)",
+                (guild_id, name, description, role_id, review_channel_id, questions, color, cooldown_days))
     c.commit(); tid = cur.lastrowid; c.close(); return tid
 
 def list_application_templates(guild_id):

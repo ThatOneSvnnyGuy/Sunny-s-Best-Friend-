@@ -55,12 +55,15 @@ def make_apply_modal(template):
             settings = database.get_settings(interaction.guild_id)
             review_id = (self.template or {}).get("review_channel_id") or settings.get("app_channel_id")
             channel = interaction.guild.get_channel(review_id or 0)
-            e = discord.Embed(title=f"📝 Application #{app_id} — {title}", color=discord.Color.blurple())
+            color = (self.template or {}).get("color") or 0x5865F2
+            e = discord.Embed(title=f"📝 Application #{app_id} — {title}", color=color)
             e.add_field(name="Applicant", value=interaction.user.mention, inline=False)
             for q, ti in zip(qs, self.inputs):
                 e.add_field(name=q["label"], value=str(ti) or "—", inline=False)
             if channel:
-                await channel.send(embed=e, view=ApplicationReviewView(app_id))
+                view = ApplicationReviewView(app_id)
+                msg = await channel.send(embed=e, view=view)
+                view.message = msg
                 await interaction.response.send_message(f"✅ Application #{app_id} sent for review!", ephemeral=True)
             else:
                 await interaction.response.send_message("✅ Application saved, but no review channel is set — ask an admin to set one up in the dashboard.", ephemeral=True)
@@ -72,6 +75,11 @@ class ApplyTemplateSelect(discord.ui.Select):
                          options=[discord.SelectOption(label=t["name"][:100], value=str(t["id"]), description=(t.get("description") or "")[:100]) for t in templates])
     async def callback(self, interaction: discord.Interaction):
         tpl = database.get_application_template(int(self.values[0]), interaction.guild_id)
+        if tpl:
+            left = _cooldown_days_left(interaction, tpl)
+            if left > 0:
+                await interaction.response.send_message(f"⏳ You already applied for this recently — you can apply again in {left} day(s).", ephemeral=True)
+                return
         await interaction.response.send_modal(make_apply_modal(tpl)())
 
 class ApplyTemplateView(discord.ui.View):
@@ -79,15 +87,44 @@ class ApplyTemplateView(discord.ui.View):
         super().__init__(timeout=180)
         self.add_item(ApplyTemplateSelect(templates))
 
+class ApplicationPanelView(discord.ui.View):
+    """Persistent panel posted from the dashboard: a dropdown of every
+    application template. Registered at startup so it keeps working
+    after restarts (real options come from the interaction)."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ApplyTemplateSelect([{"id": 0, "name": "—", "description": "No application types yet"}]))
+
+def _cooldown_days_left(interaction, tpl):
+    """Days left on a per-template cooldown (0 = free to apply)."""
+    import time as _time
+    days = (tpl or {}).get("cooldown_days")
+    if not days:
+        return 0
+    last = database.last_application_time(interaction.guild_id, interaction.user.id, tpl["id"])
+    if not last:
+        return 0
+    left = (days * 86400 - (_time.time() - last)) / 86400
+    return max(0, int(left) + (1 if left % 1 else 0))
+
+class DenyReasonModal(discord.ui.Modal, title="Deny application"):
+    reason = discord.ui.TextInput(label="Why is it denied? (optional)", style=discord.TextStyle.paragraph, required=False, max_length=300, placeholder="The applicant gets this reason in a DM.")
+    def __init__(self, view):
+        super().__init__(); self.view = view
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.view._decide(interaction, False, str(self.reason) or None)
+
 class ApplicationReviewView(discord.ui.View):
     def __init__(self, app_id: int):
         super().__init__(timeout=None)
         self.app_id = app_id
 
-    async def _decide(self, interaction: discord.Interaction, approve: bool):
+    async def _decide(self, interaction: discord.Interaction, approve: bool, reason: str = None):
         app = database.get_application(self.app_id)
         if not app or app["status"] != "pending":
-            await interaction.response.send_message("This application was already decided.", ephemeral=True); return
+            if not interaction.response.is_done():
+                await interaction.response.send_message("This application was already decided.", ephemeral=True)
+            return
         status = "approved" if approve else "denied"
         database.set_application_status(self.app_id, status)
         settings = database.get_settings(interaction.guild_id)
@@ -101,12 +138,28 @@ class ApplicationReviewView(discord.ui.View):
             if role:
                 try: await member.add_roles(role)
                 except Exception: pass
-        e = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        # The review message: stored on the view when posted, or the message
+        # the button sits on. (A modal submit has no message of its own.)
+        msg = getattr(self, "message", None) or getattr(interaction, "message", None)
+        e = msg.embeds[0] if msg and msg.embeds else discord.Embed()
         e.color = discord.Color.green() if approve else discord.Color.red()
         e.add_field(name="Decision", value=f"{'✅ Approved' if approve else '❌ Denied'} by {interaction.user.mention}", inline=False)
-        await interaction.response.edit_message(embed=e, view=None)
+        if reason:
+            e.add_field(name="Reason", value=reason, inline=False)
+        if msg:
+            try: await msg.edit(embed=e, view=None)
+            except Exception: pass
+        if not interaction.response.is_done():
+            if getattr(interaction, "message", None) is not None:
+                await interaction.response.edit_message(embed=e, view=None)
+            else:
+                await interaction.response.send_message(f"Application #{self.app_id} {status}.", ephemeral=True)
         if member:
-            try: await member.send(f"Your application #{self.app_id} was **{status}** in {interaction.guild.name}.")
+            try:
+                dm = f"Your application #{self.app_id} was **{status}** in {interaction.guild.name}."
+                if reason:
+                    dm += f"\nReason: {reason}"
+                await member.send(dm)
             except Exception: pass
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
@@ -115,7 +168,7 @@ class ApplicationReviewView(discord.ui.View):
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, emoji="❌")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._decide(interaction, False)
+        await interaction.response.send_modal(DenyReasonModal(self))
 
 class Applications(commands.Cog):
     def __init__(self, bot): self.bot = bot
@@ -134,6 +187,9 @@ class Applications(commands.Cog):
         if not templates and not settings.get("app_channel_id"):
             await i.response.send_message("Applications aren't set up yet — ask an admin to make a template in the dashboard first.", ephemeral=True); return
         if len(templates) == 1:
+            left = _cooldown_days_left(i, templates[0])
+            if left > 0:
+                await i.response.send_message(f"⏳ You already applied for this recently — you can apply again in {left} day(s).", ephemeral=True); return
             await i.response.send_modal(make_apply_modal(templates[0])())
         elif len(templates) > 1:
             await i.response.send_message("What are you applying for?", view=ApplyTemplateView(templates), ephemeral=True)
@@ -152,4 +208,6 @@ class Applications(commands.Cog):
             e.add_field(name=f"#{r['id']} — <@{r['user_id']}>", value=str(first)[:200], inline=False)
         await i.response.send_message(embed=e)
 
-async def setup(bot): await bot.add_cog(Applications(bot))
+async def setup(bot):
+    await bot.add_cog(Applications(bot))
+    bot.add_view(ApplicationPanelView())
