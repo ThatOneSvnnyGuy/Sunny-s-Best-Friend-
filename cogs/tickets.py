@@ -305,6 +305,25 @@ class TicketQuestionsModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         await create_ticket_for_menu(interaction, self.menu, answers)
 
+def _ticket_open_embed(label, opener_mention):
+    """The message in the ticket when it opens — kept short on purpose."""
+    e = discord.Embed(title=f"🎫 {label}",
+        description=f"{opener_mention} — staff will be with you shortly.",
+        color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    e.set_footer(text="Sunny's Best Friend • Ticket System")
+    return e
+
+def _format_answers(answers):
+    """Answers as their own message, sent right after the open message.
+    A name plus a member count reads like a sentence ("Vezzy Studios
+    has 815 members"); anything else is a plain list."""
+    items = [(q, a) for q, a in (answers or {}).items() if (a or "").strip()]
+    if len(items) == 2:
+        (q1, a1), (q2, a2) = items
+        if "member" in q2.lower() and a2.strip().isdigit():
+            return f"📋 {a1.strip()} has {a2.strip()} members"
+    return "📋 **Ticket answers**\n" + "\n".join(f"• **{q}**: {a}" for q, a in items)
+
 async def create_ticket_for_menu(interaction: discord.Interaction, menu, answers=None):
     """Open the ticket for a menu: named for what it is, visible only to
     the opener, the bot, and that menu's roles (or the guild staff role)."""
@@ -332,20 +351,9 @@ async def create_ticket_for_menu(interaction: discord.Interaction, menu, answers
         if log_ch:
             try: await log_ch.send(f"🎫 New ticket {channel.mention} opened by {interaction.user.mention} — **{label}** {mentions}")
             except Exception: pass
-    e = discord.Embed(title=f"Ticket — {label}",
-        description=f"{interaction.user.mention}, thanks for opening a ticket. A member of staff will be with you shortly.",
-        color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
-    e.add_field(name="Opened by", value=interaction.user.mention, inline=True)
-    e.add_field(name="Type", value=label, inline=True)
-    for q, a in (answers or {}).items():
-        e.add_field(name=q[:256], value=a[:1024], inline=False)
-    e.add_field(name="What happens next",
-        value="• Staff will claim this ticket when they're available\n"
-              "• When it closes, you'll rate your support 1–5 ⭐",
-        inline=False)
-    e.add_field(name="Buttons", value="🙋 Claim this ticket  •  ➕ Add someone  •  🔒 Close this ticket", inline=False)
-    e.set_footer(text="Sunny's Best Friend • Ticket System")
-    await channel.send(f"{interaction.user.mention} {mentions}", embed=e, view=TicketControls())
+    await channel.send(f"{interaction.user.mention} {mentions}", embed=_ticket_open_embed(label, interaction.user.mention), view=TicketControls())
+    if answers:
+        await channel.send(_format_answers(answers))
     msg = f"Ticket created: {channel.mention}"
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
