@@ -138,7 +138,7 @@ def init_db():
         except Exception: pass
     c.commit()
     # Migrations for older bot.db files (new columns)
-    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_verse_role_id INTEGER", "faith_prayer_role_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "app_panel_channel_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT", "ticket_panel_title TEXT", "ticket_panel_description TEXT", "ticket_panel_color INTEGER"]:
+    for col in ["faith_channel_id INTEGER", "faith_verse_channel_id INTEGER", "faith_prayer_channel_id INTEGER", "faith_verse_role_id INTEGER", "faith_prayer_role_id INTEGER", "faith_hour INTEGER", "faith_last_posted TEXT", "messages_backfilled TEXT", "starboard_channel_id INTEGER", "app_channel_id INTEGER", "app_role_id INTEGER", "app_panel_channel_id INTEGER", "prefix TEXT DEFAULT '!'", "autorole_id INTEGER", "panel_channel_id INTEGER", "ticket_log_channel_id INTEGER", "welcome_message TEXT", "ticket_panel_title TEXT", "ticket_panel_description TEXT", "ticket_panel_color INTEGER", "ticket_builtins_seeded INTEGER"]:
         try: cur.execute(f"ALTER TABLE settings ADD COLUMN {col}")
         except Exception: pass
     c.commit(); c.close()
@@ -484,17 +484,41 @@ def delete_ticket_menu(menu_id, guild_id):
     cur.execute("UPDATE ticket_templates SET menu_id=NULL WHERE menu_id=? AND guild_id=?", (menu_id, guild_id))
     c.commit(); c.close()
 
+# The starter ticket options every server gets. They are seeded as REAL
+# dashboard options (not hardcoded) so the owner can edit or delete them.
+# Tuple: (value, label, description, emoji, ticket_prefix)
+BUILTIN_TICKET_TOPICS = [
+    ("general", "💬 General Help", "I need help with something", None, "general"),
+    ("report", "🚨 Report a Player", "Report someone breaking the rules", None, "report"),
+    ("bug", "🐛 Bug Report", "Something in the server / bot is broken", None, "bug"),
+    ("billing", "💳 Billing / Purchase", "Help with a purchase, order or payment", None, "billing"),
+    ("appeal", "⚖️ Appeal a Punishment", "Appeal a ban, timeout or warning", None, "appeal"),
+    ("other", "✨ Something Else", "Anything that doesn't fit above", None, "other"),
+]
+
 def ensure_ticket_menus(guild_id):
     """Every template belongs to a menu. Templates made before menus
-    existed get moved into a default first menu automatically."""
+    existed get moved into a default first menu automatically. The first
+    time a server uses tickets, the 6 starter options are seeded as real
+    templates in that menu, so the owner can edit or delete them like
+    any other option (they used to be hardcoded and undeletable)."""
     menus = list_ticket_menus(guild_id)
     if not menus:
-        mid = add_ticket_menu(guild_id, "What do you need help with?", "What do you need help with? Pick one...")
+        mid = add_ticket_menu(guild_id, "Support", "What do you need help with? Pick one...")
         menus = list_ticket_menus(guild_id)
     first = menus[0]["id"]
     c = _conn(); cur = c.cursor()
     cur.execute("UPDATE ticket_templates SET menu_id=? WHERE guild_id=? AND menu_id IS NULL", (first, guild_id))
-    c.commit(); c.close()
+    c.commit()
+    s = dict(cur.execute("SELECT ticket_builtins_seeded FROM settings WHERE guild_id=?", (guild_id,)).fetchone() or {})
+    has_templates = cur.execute("SELECT COUNT(*) FROM ticket_templates WHERE guild_id=?", (guild_id,)).fetchone()[0] > 0
+    if not s.get("ticket_builtins_seeded") and not has_templates:
+        for value, label, desc, emoji, prefix in BUILTIN_TICKET_TOPICS:
+            cur.execute("INSERT INTO ticket_templates (guild_id, name, description, menu_id, emoji, ticket_prefix) VALUES (?,?,?,?,?,?)",
+                        (guild_id, label, desc, first, emoji, prefix))
+        c.commit()
+    c.close()
+    set_setting(guild_id, "ticket_builtins_seeded", 1)
     return list_ticket_menus(guild_id)
 
 def add_ticket_template(guild_id, name, description="", staff_role_id=None, panel_channel_id=None, category_id=None, menu_id=None, emoji=None, ticket_prefix=None):

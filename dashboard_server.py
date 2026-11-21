@@ -390,12 +390,12 @@ def section_tickets(guild_id):
         if edit_menu_id and str(m["id"]) == edit_menu_id:
             mrows += f"""<div class="card"><h3>✏️ Edit menu</h3>
             <form method="post"><input type="hidden" name="action" value="edit_menu"><input type="hidden" name="menu_id" value="{m['id']}">
-            <label>Menu title<input name="title" value="{m['title']}" maxlength="100"></label>
-            <label>Placeholder text inside the dropdown<input name="placeholder" value="{m.get('placeholder') or ''}" maxlength="150"></label>
+            <label>Menu title — this is the text on the dropdown button<input name="title" value="{m['title']}" maxlength="100"></label>
+            <label>Question — shown in the panel above the dropdown<input name="placeholder" value="{m.get('placeholder') or ''}" maxlength="150"></label>
             <button>Save changes</button> <a href="/dashboard/{guild_id}/tickets"><button type="button">Cancel</button></a></form></div>"""
         else:
             mrows += f"""<div class="card"><h3>⬇️ {m['title']}</h3>
-            <p class="muted">Placeholder: {m.get('placeholder') or m['title']}</p>
+            <p class="muted">Question: {m.get('placeholder') or m['title']}</p>
             <p>{sum(1 for t in templates if (t.get('menu_id') or menus[0]['id']) == m['id'])} option(s) in this menu</p>
             <a href="/dashboard/{guild_id}/tickets?edit_menu={m['id']}"><button type="button">✏️ Edit</button></a>
             <form method="post" style="display:inline"><input type="hidden" name="action" value="delete_menu"><input type="hidden" name="menu_id" value="{m['id']}"><button class="danger">Delete menu</button></form></div>"""
@@ -404,9 +404,9 @@ def section_tickets(guild_id):
         if edit_tpl_id and str(t["id"]) == edit_tpl_id:
             rows += f"""<div class="card"><h3>✏️ Edit option</h3>
             <form method="post"><input type="hidden" name="action" value="edit_template"><input type="hidden" name="template_id" value="{t['id']}">
-            <label>Option name<input name="name" value="{t['name']}" maxlength="100"></label>
+            <label>Option name — the big bold text in the dropdown<input name="name" value="{t['name']}" maxlength="100"></label>
             <label>Menu<select name="menu_id">{_menu_opts(t.get('menu_id') or menus[0]['id'])}</select></label>
-            <label>Description<input name="description" value="{t.get('description') or ''}" maxlength="100"></label>
+            <label>Description — the smaller grey text under the name in the dropdown<input name="description" value="{t.get('description') or ''}" maxlength="100"></label>
             <label>Emoji<input name="emoji" value="{t.get('emoji') or ''}" maxlength="10"></label>
             <label>Ticket channel name<input name="ticket_prefix" value="{t.get('ticket_prefix') or ''}" maxlength="30"></label>
             <label>Staff role ID<input name="staff_role_id" value="{t.get('staff_role_id') or ''}" placeholder="Discord ID number"></label>
@@ -433,15 +433,15 @@ def section_tickets(guild_id):
     <div class="card"><h3>Your dropdown menus</h3>{mrows}</div>
     <div class="card"><h3>＋ New menu</h3>
     <form method="post"><input type="hidden" name="action" value="add_menu">
-    <label>Menu title (shows above the dropdown)<input name="title" placeholder="e.g. Support" maxlength="100"></label>
-    <label>Placeholder text inside the dropdown<input name="placeholder" placeholder="e.g. What do you need help with? Pick one..." maxlength="150"></label>
+    <label>Menu title — this is the text on the dropdown button<input name="title" placeholder="e.g. Support" maxlength="100"></label>
+    <label>Question — shown in the panel above the dropdown<input name="placeholder" placeholder="e.g. What do you need help with? Pick one..." maxlength="150"></label>
     <button>Create menu</button></form></div>
     <div class="card"><h3>Your ticket options</h3>{rows}</div>
     <div class="card"><h3>＋ New option</h3>
     <form method="post"><input type="hidden" name="action" value="add_template">
-    <label>Option name (shows in the dropdown)<input name="name" placeholder="e.g. Report a Player" maxlength="100"></label>
+    <label>Option name — the big bold text in the dropdown<input name="name" placeholder="e.g. Report a Player" maxlength="100"></label>
     <label>Menu<select name="menu_id">{_menu_opts()}</select></label>
-    <label>Description<input name="description" placeholder="e.g. Report someone breaking the rules" maxlength="100"></label>
+    <label>Description — the smaller grey text under the name in the dropdown<input name="description" placeholder="e.g. Report someone breaking the rules" maxlength="100"></label>
     <label>Emoji (one emoji, e.g. 🚨)<input name="emoji" placeholder="🚨" maxlength="10"></label>
     <label>Ticket channel name (optional — e.g. report, so channels are named report-username)<input name="ticket_prefix" placeholder="report" maxlength="30"></label>
     <label>Staff role ID (optional — leave blank to use the server default)<input name="staff_role_id" placeholder="Discord ID number"></label>
@@ -477,16 +477,13 @@ def _post_ticket_panel(guild_id, s):
     by_menu = {}
     for t in templates:
         by_menu.setdefault(t.get("menu_id") or menus[0]["id"], []).append(t)
-    builtin = [{"label": "💬 General Help", "value": "general", "description": "I need help with something"},
-               {"label": "🚨 Report a Player", "value": "report", "description": "Report someone breaking the rules"},
-               {"label": "🐛 Bug Report", "value": "bug", "description": "Something in the server / bot is broken"},
-               {"label": "💳 Billing / Purchase", "value": "billing", "description": "Help with a purchase, order or payment"},
-               {"label": "⚖️ Appeal a Punishment", "value": "appeal", "description": "Appeal a ban, timeout or warning"},
-               {"label": "✨ Something Else", "value": "other", "description": "Anything that doesn't fit above"}]
     title = s.get("ticket_panel_title") or "🎫 Need Help?"
     desc = s.get("ticket_panel_description") or "Need help? Open a ticket below and our staff team will help you.\n\n**How it works**\n• Pick a topic from the menu below\n• Describe your issue in the ticket\n• A staff member will claim it and help you\n\nWhen your ticket closes, you'll be asked to rate your support 1–5 ⭐."
     color = s.get("ticket_panel_color") or 5793266
-    pages = [menus[i:i + 5] for i in range(0, len(menus), 5)] or [menus]
+    # Menus with no options are skipped (the starter options are real
+    # templates now, so deleting them all just leaves that menu out).
+    nonempty = [m for m in menus if by_menu.get(m["id"])]
+    pages = [nonempty[i:i + 5] for i in range(0, len(nonempty), 5)] or [[]]
     posted = 0
     for pi, page_menus in enumerate(pages):
         components = []
@@ -498,26 +495,33 @@ def _post_ticket_panel(guild_id, s):
                 if t.get("emoji") and len(t["emoji"]) <= 4:
                     o["emoji"] = {"name": t["emoji"]}
                 opts.append(o)
-            if i == 1 and not opts:
-                opts = builtin
             if not opts:
-                opts = [{"label": "—", "value": "none", "description": "No options in this menu yet"}]
+                continue
             custom_id = "ticket_topic_select" if i == 1 else f"ticket_menu_{i}"
+            # The dropdown button shows the menu NAME; the question text
+            # lives in the panel embed above it, not on the button.
             components.append({"type": 1, "components": [{"type": 3, "custom_id": custom_id,
-                "placeholder": (m.get("placeholder") or m["title"])[:150], "options": opts}]})
+                "placeholder": m["title"][:100], "options": opts}]})
         page_title = title if pi == 0 else f"{title} (continued)"
+        page_desc = desc
+        qlines = [f"**{m['title']}** — {m['placeholder']}" for m in page_menus
+                  if m.get("placeholder") and m["placeholder"].strip() and m["placeholder"].strip() != m["title"]]
+        if qlines:
+            page_desc = desc + "\n\n" + "\n".join(qlines)
+        payload = {"embeds": [{"title": page_title, "description": page_desc, "color": color, "footer": {"text": "Sunny's Best Friend • Ticket System"}}]}
+        if components:
+            payload["components"] = components
         try:
             r = requests.post(f"{API}/channels/{panel_channel}/messages",
                 headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
-                json={"embeds": [{"title": page_title, "description": desc, "color": color, "footer": {"text": "Sunny's Best Friend • Ticket System"}}],
-                      "components": components},
+                json=payload,
                 timeout=10)
         except Exception as e:
             return f"<p>⚠️ Couldn't post the panel: {e}</p>"
         if not r.ok:
             return f"<p>⚠️ Discord said no: {r.text[:200]}</p>"
         posted += 1
-    return f"<p>✅ Ticket panel posted in Discord ({posted} message{'s' if posted > 1 else ''} for {len(menus)} menu{'s' if len(menus) > 1 else ''}).</p>"
+    return f"<p>✅ Ticket panel posted in Discord ({posted} message{'s' if posted > 1 else ''} for {len(nonempty)} menu{'s' if len(nonempty) > 1 else ''}).</p>"
 
 @app.route("/dashboard/<int:guild_id>/applications", methods=["GET", "POST"])
 def section_applications(guild_id):

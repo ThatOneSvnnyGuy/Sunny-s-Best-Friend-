@@ -175,17 +175,17 @@ async def add_user_to_ticket(interaction: discord.Interaction, user: discord.Mem
 class TicketControls(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="🙋 Claim", style=discord.ButtonStyle.primary, custom_id="ticket_claim")
+    @discord.ui.button(emoji="🙋", style=discord.ButtonStyle.primary, custom_id="ticket_claim")
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         t = database.get_ticket(interaction.channel_id)
         if not t:
             await interaction.response.send_message("Not a ticket channel.", ephemeral=True); return
         database.claim_ticket(interaction.channel_id, interaction.user.id)
         await interaction.response.send_message(f"{interaction.user.mention} claimed this ticket! They'll help you now.", ephemeral=False)
-    @discord.ui.button(label="➕ Add User", style=discord.ButtonStyle.secondary, custom_id="ticket_add_user")
+    @discord.ui.button(emoji="➕", style=discord.ButtonStyle.secondary, custom_id="ticket_add_user")
     async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("Pick a user to add to this ticket:", view=AddUserSelectView(), ephemeral=True)
-    @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.danger, custom_id="ticket_close")
+    @discord.ui.button(emoji="🔒", style=discord.ButtonStyle.danger, custom_id="ticket_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CloseReasonModal(interaction.channel_id))
 
@@ -227,14 +227,7 @@ async def close_ticket_flow(guild: discord.Guild, channel: discord.TextChannel, 
         try: await ch.delete(reason="Ticket closed, rating window expired")
         except Exception: pass
 
-TOPICS = [
-    ("general", "💬 General Help", "I need help with something", None),
-    ("report", "🚨 Report a Player", "Report someone breaking the rules", None),
-    ("bug", "🐛 Bug Report", "Something in the server / bot is broken", None),
-    ("billing", "💳 Billing / Purchase", "Help with a purchase, order or payment", None),
-    ("appeal", "⚖️ Appeal a Punishment", "Appeal a ban, timeout or warning", None),
-    ("other", "✨ Something Else", "Anything that doesn't fit above", None),
-]
+TOPICS = [(v, l, d, e) for v, l, d, e, _p in database.BUILTIN_TICKET_TOPICS]
 
 def _slug(text: str) -> str:
     """Make a string safe for a Discord channel name."""
@@ -249,8 +242,8 @@ def panel_menus(guild_id):
     There is NO cap on the number of menus — Discord only allows 5
     dropdowns per message, so the panel is split into pages of 5
     (see TicketPanel / panel_pages). Slot 1 keeps the historic custom_id
-    so panels already posted keep working. With no templates, slot 1
-    is the built-in topics."""
+    so panels already posted keep working. With no templates, the
+    starter options are seeded as real templates (see database)."""
     if not guild_id:
         # Generic view for restart persistence: slot 1 has the built-in
         # topics, slots 2-5 exist only so their interactions still dispatch
@@ -272,12 +265,19 @@ def panel_menus(guild_id):
             if emoji and len(emoji) > 4:
                 emoji = None  # custom <:name:id> emoji aren't usable in select options
             opts.append((f"tpl_{t['id']}", t["name"][:100], (t.get("description") or "")[:100], emoji))
-        if i == 1 and not opts:
-            opts = list(TOPICS)
         if not opts:
-            opts = [("none", "—", "No options in this menu yet", None)]
+            continue  # a menu with no options doesn't get a dropdown
         out.append((i, m["title"], m.get("placeholder") or m["title"], opts))
     return out
+
+def _menu_question_lines(page_menus):
+    """One line per menu for the panel embed: the menu NAME is the
+    dropdown button now, so the question text goes here instead."""
+    lines = []
+    for _slot, title, ph, _opts in page_menus:
+        if ph and ph.strip() and ph.strip() != title:
+            lines.append(f"**{title}** — {ph}")
+    return lines
 
 def panel_pages(guild_id):
     """How many panel messages the guild's menus need (5 dropdowns max per message)."""
@@ -372,6 +372,7 @@ async def create_ticket_for(interaction: discord.Interaction, topic: str, label:
               "• Staff will claim this ticket when they're available\n"
               "• When it closes, you'll rate your support 1–5 ⭐",
         inline=False)
+    e.add_field(name="Buttons", value="🙋 Claim this ticket  •  ➕ Add someone  •  🔒 Close this ticket", inline=False)
     e.set_footer(text="Sunny's Best Friend • Ticket System")
     await channel.send(f"{interaction.user.mention} {staff_role.mention if staff_role else ''}", embed=e, view=TicketControls())
     await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
@@ -379,8 +380,10 @@ async def create_ticket_for(interaction: discord.Interaction, topic: str, label:
 class TicketPanel(discord.ui.View):
     def __init__(self, guild_id=None, page=0):
         super().__init__(timeout=None)
-        for slot, _title, placeholder, opts in panel_menus(guild_id)[page * 5:(page + 1) * 5]:
-            self.add_item(TicketMenuSelect(slot, guild_id, opts, placeholder))
+        for slot, title, placeholder, opts in panel_menus(guild_id)[page * 5:(page + 1) * 5]:
+            # The dropdown button shows the menu NAME (title); the question
+            # text lives in the panel embed above it, not on the button.
+            self.add_item(TicketMenuSelect(slot, guild_id, opts, title))
 
 class Tickets(commands.Cog):
     def __init__(self, bot): self.bot = bot
@@ -399,6 +402,9 @@ class Tickets(commands.Cog):
         database.set_setting(interaction.guild_id, "ticket_log_channel_id", ticket_log_channel.id)
         if category: database.set_setting(interaction.guild_id, "ticket_category_id", category.id)
         title, desc, color = panel_embed_settings(interaction.guild_id)
+        lines = _menu_question_lines(panel_menus(interaction.guild_id))
+        if lines:
+            desc = desc + "\n\n" + "\n".join(lines)
         e = discord.Embed(title=title, description=desc, color=color)
         e.set_footer(text="Sunny's Best Friend • Ticket System")
         pages = panel_pages(interaction.guild_id)
